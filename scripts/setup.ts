@@ -15,10 +15,13 @@
  */
 
 import { execSync, spawnSync } from "child_process";
-import { existsSync, mkdirSync, copyFileSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, copyFileSync } from "fs";
 import { join } from "path";
+import { fileURLToPath } from "url";
 
-const ROOT = new URL("..", import.meta.url).pathname.replace(/^\/([A-Z]:)/, "$1");
+// fileURLToPath décode correctement les espaces (%20) et caractères spéciaux
+// dans le chemin du dossier (ex: "dlmm-agent (1)").
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const DASHBOARD = join(ROOT, "dashboard");
 const ML_DIR = join(ROOT, "ml");
 
