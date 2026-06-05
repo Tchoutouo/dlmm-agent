@@ -6,7 +6,7 @@
  * (les nombres arrivent parfois en string dans l'API — on normalise au parsing).
  */
 
-/** Fenêtres temporelles renvoyées par l'API pour fees et fee/TVL. */
+/** Fenêtres temporelles renvoyées par l'API pour fees, volume et fee/TVL. */
 export interface TimeWindowed {
   min_30: number;
   hour_1: number;
@@ -16,35 +16,52 @@ export interface TimeWindowed {
   hour_24: number;
 }
 
-/** Paire DLMM brute telle que renvoyée par l'API Meteora. */
+/**
+ * Pool DLMM brute telle que renvoyée par le nouveau endpoint
+ * GET https://dlmm.datapi.meteora.ag/pools (structure depuis juin 2026).
+ * L'ancien domaine dlmm-api.meteora.ag/pair/all est hors service.
+ */
 export interface MeteoraPair {
   address: string;
   name: string;
-  mint_x: string;
-  mint_y: string;
-  bin_step: number;
-  base_fee_percentage: string;
-  max_fee_percentage: string;
-  protocol_fee_percentage: string;
-  liquidity: string; // USD, en string
+  is_blacklisted: boolean;
+  tags: string[];
+  token_x: {
+    address: string;
+    symbol: string;
+    decimals: number;
+    is_verified: boolean;
+    price: number;
+  };
+  token_y: {
+    address: string;
+    symbol: string;
+    decimals: number;
+    is_verified: boolean;
+    price: number;
+  };
+  pool_config: {
+    bin_step: number;
+    base_fee_pct: number;
+    max_fee_pct: number;
+    protocol_fee_pct: number;
+  };
+  dynamic_fee_pct: number;
+  tvl: number;
   current_price: number;
   apr: number;
   apy: number;
   farm_apr: number;
   farm_apy: number;
+  has_farm: boolean;
+  volume: TimeWindowed;
   fees: TimeWindowed;
+  protocol_fees: TimeWindowed;
   fee_tvl_ratio: TimeWindowed;
-  fees_24h: number;
-  today_fees: number;
-  trade_volume_24h: number;
-  cumulative_trade_volume: string;
-  cumulative_fee_volume: string;
-  reserve_x_amount: number;
-  reserve_y_amount: number;
-  is_blacklisted: boolean;
-  is_verified: boolean;
-  hide: boolean;
-  tags: string[];
+  cumulative_metrics: {
+    volume: number;
+    fees: number;
+  };
 }
 
 /** Version normalisée (nombres garantis) utilisée par l'analytique. */

@@ -8,8 +8,8 @@ import "dotenv/config";
  * On force le passage explicite en mainnet + écriture pour engager du capital.
  */
 const schema = z.object({
-  METEORA_API_BASE: z.string().url().default("https://dlmm-api.meteora.ag"),
-  // API de données plus récente : OHLCV, volume historique (30 RPS).
+  // Unique point d'entrée de l'API Meteora depuis juin 2026.
+  // L'ancien dlmm-api.meteora.ag est hors service — pools + OHLCV sur le même domaine.
   METEORA_DATA_API_BASE: z.string().url().default("https://dlmm.datapi.meteora.ag"),
   // Source de prix USD des tokens (Jupiter Price API V3).
   JUPITER_PRICE_API: z.string().url().default("https://lite-api.jup.ag/price/v3"),
