@@ -1,0 +1,29 @@
+# ── Dépendances ─────────────────────────────────────────────
+node_modules/
+dashboard/node_modules/
+ml/__pycache__/
+ml/.venv/
+*.pyc
+
+# ── Build ────────────────────────────────────────────────────
+dist/
+dashboard/.next/
+dashboard/next-env.d.ts
+dashboard/tsconfig.tsbuildinfo
+
+# ── Données générées à l'exécution ───────────────────────────
+data/
+
+# ── SÉCURITÉ — NE JAMAIS COMMITTER ──────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── Logs ────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+
+# ── OS ──────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini

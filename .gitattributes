@@ -1,0 +1,7 @@
+# Normalise les fins de ligne en LF dans le dépôt (CRLF dans le working tree sur Windows)
+* text=auto eol=lf
+
+# Fichiers binaires — pas de conversion
+*.db binary
+*.png binary
+*.jpg binary
