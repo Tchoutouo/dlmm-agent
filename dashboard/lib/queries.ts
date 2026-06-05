@@ -1,5 +1,5 @@
-import { getDb, hasTable } from "./db.js";
-import { summarize, type JournalRow, type LearningSummary } from "./analytics.js";
+import { getDb, hasTable } from "./db";
+import { summarize, type JournalRow, type LearningSummary } from "./analytics";
 
 export interface Portfolio {
   navUsd: number;
