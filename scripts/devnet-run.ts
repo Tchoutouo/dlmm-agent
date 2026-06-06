@@ -38,7 +38,7 @@ import { deepAnalyze } from "../src/analytics/deepAnalysis.js";
 import { assessRisk } from "../src/risk/riskAgent.js";
 import { buildQuoteProfile } from "../src/analytics/quoteRisk.js";
 import { config } from "../src/config.js";
-import DLMM from "@meteora-ag/dlmm";
+import DLMM from "../src/dlmmSdk.js";
 import { PublicKey } from "@solana/web3.js";
 
 const LIVE = process.argv.includes("--live");

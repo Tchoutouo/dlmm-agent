@@ -1,4 +1,4 @@
-import DLMM, { StrategyType, autoFillYByStrategy } from "@meteora-ag/dlmm";
+import DLMM, { StrategyType, autoFillYByStrategy } from "../dlmmSdk.js";
 import { PublicKey, Keypair, sendAndConfirmTransaction, type Transaction } from "@solana/web3.js";
 import BN from "bn.js";
 import type { FeeRegimeLabel } from "../types.js";

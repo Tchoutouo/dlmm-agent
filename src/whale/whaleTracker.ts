@@ -1,4 +1,4 @@
-import DLMM from "@meteora-ag/dlmm";
+import DLMM from "../dlmmSdk.js";
 import {
   Connection,
   PublicKey,

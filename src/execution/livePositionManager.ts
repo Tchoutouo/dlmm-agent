@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import DLMM from "@meteora-ag/dlmm";
+import DLMM from "../dlmmSdk.js";
 import { PublicKey } from "@solana/web3.js";
 import type { PortfolioSnapshot, PortfolioPosition } from "../types.js";
 import type { TradeJournal } from "../journal/journal.js";
