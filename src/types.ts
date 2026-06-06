@@ -6,14 +6,14 @@
  * (les nombres arrivent parfois en string dans l'API — on normalise au parsing).
  */
 
-/** Fenêtres temporelles renvoyées par l'API pour fees, volume et fee/TVL. */
+/** Fenêtres temporelles renvoyées par l'API Meteora (clés avec chiffres → bracket notation). */
 export interface TimeWindowed {
-  min_30: number;
-  hour_1: number;
-  hour_2: number;
-  hour_4: number;
-  hour_12: number;
-  hour_24: number;
+  "30m"?: number;
+  "1h"?: number;
+  "2h"?: number;
+  "4h"?: number;
+  "12h"?: number;
+  "24h"?: number;
 }
 
 /**

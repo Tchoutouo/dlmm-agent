@@ -118,7 +118,7 @@ async function main() {
   for (const c of candidates) {
     console.log(`\n  → ${c.pool.name}`);
     try {
-      const candles = await data.getOhlcv(c.pool.address, "1h", 168);
+      const candles = await data.getOhlcv(c.pool.address, "1h", 96);
       const analysis = deepAnalyze(c, candles);
       const quoteUsd = await oracle.getUsdPrice(c.pool.mintY);
       const quoteProfile = buildQuoteProfile(c.pool.mintY, quoteUsd);

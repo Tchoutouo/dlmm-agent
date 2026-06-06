@@ -49,6 +49,21 @@ export class RealExecutor {
     const gate = this.gate();
     if (gate.mode === "REFUSE") return { mode: gate.mode, ok: false, note: gate.reason };
 
+    // DRY_RUN : on simule la décision sans aucun appel on-chain.
+    // Les pools viennent de l'API mainnet — elles n'existent pas sur devnet.
+    if (gate.mode === "DRY_RUN") {
+      const rangeBins = config.DLMM_RANGE_BINS;
+      const strategy = strategyForRegime(input.regime);
+      const mockPositionPubkey = Keypair.generate().publicKey.toBase58();
+      return {
+        mode: "DRY_RUN",
+        ok: true,
+        note: `Simulation (NON envoyée) — ${input.poolAddress.slice(0, 8)}… bins ±${rangeBins}, stratégie ${strategy}, taille $${input.sizeUsd.toFixed(0)}`,
+        positionPubkey: mockPositionPubkey,
+      };
+    }
+
+    // LIVE : lectures on-chain + envoi de la transaction réelle.
     const { keypair, connection } = this.wallet;
     const pool = new PublicKey(input.poolAddress);
     const dlmmPool = await DLMM.create(connection, pool, { cluster: config.NETWORK });
@@ -59,8 +74,6 @@ export class RealExecutor {
     const maxBinId = activeBin.binId + rangeBins;
     const strategyType = StrategyType[strategyForRegime(input.regime)];
 
-    // Montants : ~moitié en X (token volatil), Y complété par la stratégie.
-    // Hypothèse Y ≈ USD ; à valider sur devnet (décimales, slippage).
     const xDecimals = dlmmPool.tokenX.mint.decimals;
     const xTokens = input.currentPrice > 0 ? input.sizeUsd / 2 / input.currentPrice : 0;
     const totalXAmount = new BN(Math.max(0, Math.floor(xTokens * 10 ** xDecimals)));
@@ -84,24 +97,12 @@ export class RealExecutor {
       strategy: { minBinId, maxBinId, strategyType },
     })) as Transaction;
 
-    const positionPubkey = newPosition.publicKey.toBase58();
-
-    if (gate.mode === "DRY_RUN") {
-      return {
-        mode: "DRY_RUN",
-        ok: true,
-        note: `Transaction construite (NON envoyée) — position ${positionPubkey}, bins [${minBinId},${maxBinId}], stratégie ${strategyForRegime(input.regime)}`,
-        positionPubkey,
-      };
-    }
-
-    // LIVE : on signe et on envoie
     const txHash = await sendAndConfirmTransaction(connection, tx, [keypair, newPosition]);
     return {
       mode: "LIVE",
       ok: true,
-      note: `Position ouverte (${gate.reason}) — ${positionPubkey}`,
-      positionPubkey,
+      note: `Position ouverte (${gate.reason}) — ${newPosition.publicKey.toBase58()}`,
+      positionPubkey: newPosition.publicKey.toBase58(),
       txHash,
     };
   }
