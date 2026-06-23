@@ -8,6 +8,20 @@ export const DEFAULT_WEIGHTS: ScoringWeights = {
   depth: 0.2, // profondeur/sécurité (liquidité absolue)
 };
 
+/** Stablecoins Solana mainnet connus — une paire stable/stable = 0 IL. */
+export const STABLE_MINTS = new Set([
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC
+  "Es9vMFrzWqFdTx2jPvQTjTAhMcEoP1eZFSBdmrVWV3p4", // USDT
+  "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",   // USDS
+  "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",  // PYUSD
+  "EjmyN6qEC1Tf1JxiG1ae7UTJhUxSwk1TCWNWqxWV4J6o",  // DAI
+]);
+
+/** Vrai si les deux tokens sont des stablecoins (IL ≈ 0, range très étroit). */
+export function isStablePool(pool: Pool): boolean {
+  return STABLE_MINTS.has(pool.mintX) && STABLE_MINTS.has(pool.mintY);
+}
+
 export interface ScanOptions {
   weights?: ScoringWeights;
   /** Liquidité minimale pour écarter les pools illiquides/risquées (USD). */
@@ -16,8 +30,13 @@ export interface ScanOptions {
   minVolume24h?: number;
   /** Exiger les pools vérifiées uniquement. */
   verifiedOnly?: boolean;
-  /** Nombre d'opportunités à renvoyer. */
+  /** Nombre total d'opportunités à renvoyer. */
   topN?: number;
+  /**
+   * Minimum de pools stables (USDC-USDT etc.) dans le résultat.
+   * Garantit une diversification : une partie du capital va en zone 0-IL.
+   */
+  minStableN?: number;
 }
 
 const DEFAULTS: Required<Omit<ScanOptions, "weights">> = {
@@ -25,6 +44,7 @@ const DEFAULTS: Required<Omit<ScanOptions, "weights">> = {
   minVolume24h: 5_000,
   verifiedOnly: true,
   topN: 10,
+  minStableN: 1,
 };
 
 /**
@@ -90,7 +110,19 @@ export function scanOpportunities(
     };
   });
 
-  return scored.sort((a, b) => b.score - a.score).slice(0, opts.topN);
+  const sorted = scored.sort((a, b) => b.score - a.score);
+
+  // Garantie de diversification stable/volatile
+  if (opts.minStableN > 0) {
+    const stables   = sorted.filter((s) => isStablePool(s.pool));
+    const volatiles = sorted.filter((s) => !isStablePool(s.pool));
+    const nStable   = Math.min(opts.minStableN, stables.length);
+    const nVolatile = Math.min(opts.topN - nStable, volatiles.length);
+    // Volatiles en tête, stables garantis en queue — l'agent de risque filtre ensuite
+    return [...volatiles.slice(0, nVolatile), ...stables.slice(0, nStable)];
+  }
+
+  return sorted.slice(0, opts.topN);
 }
 
 type MetricKey = "yieldRaw" | "sustainabilityRaw" | "depthRaw";

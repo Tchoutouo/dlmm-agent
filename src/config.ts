@@ -49,9 +49,35 @@ const schema = z.object({
     .default("false")
     .transform((v) => v.toLowerCase() === "true"),
   ML_SERVICE_URL: z.string().default("http://localhost:8000"),
+  // Sorties automatiques de positions (0 = désactivé)
+  TAKE_PROFIT_PCT: z.coerce.number().min(0).default(15),
+  STOP_LOSS_PCT: z.coerce.number().min(0).default(8),
+  // Rebalancing : ferme + rouvre au prix courant si hors range depuis N minutes (0 = désactivé)
+  REBALANCE_OUT_OF_RANGE_MIN: z.coerce.number().min(0).default(90),
+  // Fees minimum accumulées avant d'autoriser un rebalancing (doit couvrir coût du cycle)
+  REBALANCE_MIN_FEES_USD: z.coerce.number().min(0).default(2.0),
+  // Ferme SANS réouverture si hors range depuis N heures ET fees < seuil (0 = désactivé)
+  // Évite le deadlock : position morte hors range qui n'accumulera jamais assez de fees.
+  CLOSE_IF_OUT_OF_RANGE_H: z.coerce.number().min(0).default(6),
+  // Fees minimum accumulées avant de déclencher un claim (limite les transactions de claim inutiles)
+  MIN_FEE_CLAIM_USD: z.coerce.number().min(0).default(2.0),
+  // Horizon de détention supposé (jours). Définit la période sur laquelle l'IL est
+  // rapporté avant annualisation. Un horizon plus long réduit l'IL annualisé apparent
+  // pour un LP statique non rebalancé (IL₇j / 7 × 365, et non IL₁j × 365).
+  HOLDING_HORIZON_DAYS: z.coerce.number().int().min(1).max(30).default(7),
+  // Auto-swap Jupiter : échange automatique de tokens si solde insuffisant pour entrer une pool.
+  AUTO_SWAP: z
+    .string()
+    .default("false")
+    .transform((v) => v.toLowerCase() === "true"),
+  // Nombre maximum de nouvelles positions à ouvrir par cycle de scan.
+  // Limite les swaps auto inutiles quand plusieurs candidats sont approuvés.
+  MAX_POSITIONS_PER_SCAN: z.coerce.number().int().min(1).max(5).default(1),
   // Whale-tracking on-chain : seuil USD d'un swap « baleine » et profondeur de scan.
   WHALE_MIN_USD: z.coerce.number().positive().default(10_000),
   WHALE_LOOKBACK_TX: z.coerce.number().int().positive().max(100).default(50),
+  // Niveau de log minimum (debug < info < warn < error). Défaut info en prod.
+  LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });
 
 export const config = schema.parse(process.env);

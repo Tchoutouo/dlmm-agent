@@ -8,6 +8,7 @@ import { computeVolatility, detectVolumeAnomalies } from "./volatility.js";
 import { classifyFeeRegime } from "./dlmmFees.js";
 import { concentratedIl, suggestRange } from "./impermanentLoss.js";
 import { netAprAfterIl } from "./feeApr.js";
+import { config } from "../config.js";
 
 export interface DeepAnalysisOptions {
   timeframe?: Timeframe;
@@ -35,7 +36,9 @@ export function deepAnalyze(
   options: DeepAnalysisOptions = {}
 ): DeepAnalysis {
   const timeframe = options.timeframe ?? "1h";
-  const horizonDays = options.horizonDays ?? 1;
+  // Horizon de détention depuis la config (défaut 7 j). Un LP statique non rebalancé
+  // ne reincure pas l'IL journalier × 365 fois — on annualise sur l'horizon réel.
+  const horizonDays = options.horizonDays ?? config.HOLDING_HORIZON_DAYS;
   const rangeSigma = options.rangeSigma ?? 2;
 
   const pool = opportunity.pool;

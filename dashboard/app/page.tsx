@@ -4,6 +4,7 @@ import {
 import EquityChart from "@/components/EquityChart";
 import ApprovalsPanel from "@/components/ApprovalsPanel";
 import AutoRefresh from "@/components/AutoRefresh";
+import PositionsTable from "@/components/PositionsTable";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -17,8 +18,14 @@ export default function Page() {
   const decisions = getDecisions(25);
   const equity = getEquityCurve();
   const learning = getLearning();
-  const netPnl = equity.length ? equity[equity.length - 1].pnl : 0;
+  const netPnl = equity.length ? equity[equity.length - 1]!.pnl : 0;
   const winRate = learning.overall.winRate;
+
+  // Gains latents : PnL non réalisé + fees accumulées sur positions ouvertes
+  const unrealizedGain = positions.reduce(
+    (s, p) => s + (p.valueUsd - p.sizeUsd) + p.accruedFees,
+    0
+  );
 
   return (
     <div className="wrap">
@@ -27,7 +34,9 @@ export default function Page() {
       <div className="masthead">
         <div>
           <h1>DLMM Terminal<span className="dot">.</span></h1>
-          <div className="sub">Gestionnaire de liquidité · paper trading</div>
+          <div className="sub">
+            Gestionnaire de liquidité · {pf.isLive ? "LIVE mainnet" : "paper trading"}
+          </div>
         </div>
         <div className="sub">maj auto · 15s</div>
       </div>
@@ -35,17 +44,35 @@ export default function Page() {
       {/* Statistiques */}
       <div className="grid-stats">
         <div className="card">
-          <div className="label">NAV</div>
+          <div className="label">NAV suivie</div>
           <div className="val num">{usd(pf.navUsd)}</div>
+          {pf.realNavUsd != null && (
+            <div className="tiny muted" style={{ marginTop: 4 }}>
+              Réelle : <span className={pf.driftUsd != null && Math.abs(pf.driftUsd) > 1 ? (pf.driftUsd > 0 ? "neg" : "pos") : ""}>
+                {usd(pf.realNavUsd)}
+              </span>
+              {pf.driftUsd != null && Math.abs(pf.driftUsd) > 0.5 && (
+                <span className={pf.driftUsd > 0 ? "neg" : "pos"} style={{ marginLeft: 4 }}>
+                  ({pf.driftUsd > 0 ? "+" : ""}{pf.driftUsd.toFixed(1)}$)
+                </span>
+              )}
+            </div>
+          )}
         </div>
         <div className="card">
           <div className="label">Cash</div>
           <div className="val num">{usd(pf.cashUsd)}</div>
         </div>
         <div className="card">
-          <div className="label">PnL cumulé</div>
+          <div className="label">PnL réalisé</div>
           <div className={`val num ${netPnl >= 0 ? "pos" : "neg"}`}>
             {netPnl >= 0 ? "+" : ""}{usd(netPnl)}
+          </div>
+        </div>
+        <div className="card">
+          <div className="label">Gains latents</div>
+          <div className={`val num ${unrealizedGain >= 0 ? "accent" : "neg"}`}>
+            {unrealizedGain >= 0 ? "+" : ""}{usd(unrealizedGain)}
           </div>
         </div>
         <div className="card">
@@ -62,37 +89,13 @@ export default function Page() {
         {/* Colonne gauche */}
         <div>
           <div className="panel">
-            <h2>Courbe de PnL</h2>
-            <EquityChart data={equity} />
+            <h2>Évolution des gains</h2>
+            <EquityChart data={equity} unrealizedGain={unrealizedGain} />
           </div>
 
           <div className="panel">
             <h2>Positions ouvertes ({positions.length})</h2>
-            {positions.length === 0 ? (
-              <p className="empty">Aucune position ouverte.</p>
-            ) : (
-              <table>
-                <thead>
-                  <tr>
-                    <th>Pool</th><th className="right">Taille</th><th className="right">Valeur</th>
-                    <th className="right">Fees</th><th className="right">Range</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {positions.map((p, i) => (
-                    <tr key={i}>
-                      <td>{p.poolName}</td>
-                      <td className="right num">{usd(p.sizeUsd)}</td>
-                      <td className={`right num ${p.valueUsd >= p.sizeUsd ? "pos" : "neg"}`}>{usd(p.valueUsd)}</td>
-                      <td className="right num accent">${p.accruedFees.toFixed(2)}</td>
-                      <td className="right num muted tiny">
-                        {p.rangeLow.toFixed(3)}–{p.rangeHigh.toFixed(3)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
+            <PositionsTable positions={positions} />
           </div>
 
           <div className="panel">

@@ -35,16 +35,24 @@ export async function readWalletBalances(
 ): Promise<TokenBalance[]> {
   const balances: TokenBalance[] = [];
 
-  const lamports = await connection.getBalance(owner);
-  if (lamports > 0) balances.push({ mint: SOL_MINT, amount: lamports / LAMPORTS_PER_SOL });
+  try {
+    const lamports = await connection.getBalance(owner);
+    if (lamports > 0) balances.push({ mint: SOL_MINT, amount: lamports / LAMPORTS_PER_SOL });
+  } catch {
+    // RPC indisponible — on continue avec 0 SOL plutôt que de crasher le daemon
+  }
 
   for (const programId of [TOKEN_PROGRAM, TOKEN_2022_PROGRAM]) {
-    const res = await connection.getParsedTokenAccountsByOwner(owner, { programId });
-    for (const { account } of res.value) {
-      const info = (account.data as { parsed: { info: { mint: string; tokenAmount: { uiAmount: number | null } } } })
-        .parsed.info;
-      const amount = info.tokenAmount.uiAmount ?? 0;
-      if (amount > 0) balances.push({ mint: info.mint, amount });
+    try {
+      const res = await connection.getParsedTokenAccountsByOwner(owner, { programId });
+      for (const { account } of res.value) {
+        const info = (account.data as { parsed: { info: { mint: string; tokenAmount: { uiAmount: number | null } } } })
+          .parsed.info;
+        const amount = info.tokenAmount.uiAmount ?? 0;
+        if (amount > 0) balances.push({ mint: info.mint, amount });
+      }
+    } catch {
+      // Comptes SPL indisponibles pour ce programme — on ignore et on continue
     }
   }
   return balances;

@@ -47,7 +47,7 @@ body {
 
 .label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.16em; }
 
-.grid-stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 20px; }
+.grid-stats { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 20px; }
 .card {
   background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 16px;
 }
@@ -94,7 +94,94 @@ ul.clean { list-style: none; }
 ul.clean li { padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,0.04); }
 ul.clean li:last-child { border-bottom: none; }
 
+/* ── Bouton clôture ──────────────────────────────────────────────────────── */
+.btn-close {
+  font-size: 10px; padding: 4px 10px; color: var(--red);
+  border-color: rgba(217,106,106,0.35); background: rgba(217,106,106,0.06);
+}
+.btn-close:hover { border-color: var(--red); background: rgba(217,106,106,0.12); }
+
+/* ── Modal overlay ───────────────────────────────────────────────────────── */
+.modal-overlay {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(0,0,0,0.72); backdrop-filter: blur(3px);
+  display: flex; align-items: center; justify-content: center;
+  animation: fadeIn 0.15s ease;
+}
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+.modal {
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 6px; padding: 24px; width: 100%; max-width: 440px;
+  box-shadow: 0 24px 64px rgba(0,0,0,0.6);
+  animation: slideUp 0.18s ease;
+}
+@keyframes slideUp { from { transform: translateY(12px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+.modal-header {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-bottom: 20px;
+}
+.modal-header h3 { font-family: var(--font-display), Georgia, serif; font-size: 17px; }
+.modal-x {
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  font-size: 16px; padding: 0 4px; line-height: 1;
+}
+.modal-x:hover { color: var(--text); }
+
+/* ── Tableau de risque ───────────────────────────────────────────────────── */
+.risk-table { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+.risk-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 12px;
+}
+.risk-row:last-child { border-bottom: none; }
+.risk-row.indent { padding-left: 14px; color: var(--muted); font-size: 11px; }
+.risk-total {
+  border-top: 1px solid var(--border); border-bottom: none;
+  margin-top: 4px; padding-top: 10px; font-size: 13px;
+}
+
+/* ── Alertes de risque ───────────────────────────────────────────────────── */
+.risk-alerts {
+  border-radius: 4px; padding: 10px 14px; margin-bottom: 18px; font-size: 11px;
+}
+.risk-alerts ul { list-style: none; display: flex; flex-direction: column; gap: 5px; margin-top: 6px; }
+.risk-alert-title { font-weight: 500; margin-bottom: 4px; font-size: 12px; }
+.risk-alerts.risk-warn { background: rgba(216,162,58,0.08); border: 1px solid rgba(216,162,58,0.25); }
+.risk-alerts.risk-warn .risk-alert-title { color: var(--accent); }
+.risk-alerts.risk-danger { background: rgba(217,106,106,0.08); border: 1px solid rgba(217,106,106,0.3); }
+.risk-alerts.risk-danger .risk-alert-title { color: var(--red); }
+.risk-alerts.risk-ok { background: rgba(95,185,140,0.06); border: 1px solid rgba(95,185,140,0.2); }
+
+/* ── Boutons de confirmation ─────────────────────────────────────────────── */
+.modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 4px; }
+.btn-close-confirm { color: var(--green); border-color: rgba(95,185,140,0.35); }
+.btn-close-confirm:hover { border-color: var(--green); }
+.btn-close-confirm.warn { color: var(--accent); border-color: rgba(216,162,58,0.35); }
+.btn-close-confirm.danger { color: var(--red); border-color: rgba(217,106,106,0.4); }
+.btn-close-confirm.danger:hover { background: rgba(217,106,106,0.1); }
+
+/* ── États : spinner / succès / erreur ───────────────────────────────────── */
+.modal-status {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 12px; padding: 24px 0; text-align: center;
+}
+.spinner {
+  width: 32px; height: 32px; border-radius: 50%;
+  border: 2px solid var(--border); border-top-color: var(--accent);
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.status-icon {
+  width: 40px; height: 40px; border-radius: 50%; font-size: 18px;
+  display: flex; align-items: center; justify-content: center;
+}
+.status-icon.pos { background: rgba(95,185,140,0.15); border: 1px solid rgba(95,185,140,0.3); }
+.status-icon.neg { background: rgba(217,106,106,0.15); border: 1px solid rgba(217,106,106,0.3); }
+
 @media (max-width: 900px) {
   .cols { grid-template-columns: 1fr; }
-  .grid-stats { grid-template-columns: repeat(2, 1fr); }
+  .grid-stats { grid-template-columns: repeat(3, 1fr); }
+  .modal { margin: 0 16px; }
 }

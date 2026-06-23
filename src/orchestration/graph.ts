@@ -16,6 +16,7 @@ import { deepAnalyze } from "../analytics/deepAnalysis.js";
 import { buildQuoteProfile } from "../analytics/quoteRisk.js";
 import { assessRisk } from "../risk/riskAgent.js";
 import type { OrchestratorDeps, DecisionRecord } from "./deps.js";
+import { config } from "../config.js";
 
 export type OrchestratorMode = "autonomous" | "supervised";
 
@@ -33,6 +34,7 @@ const GraphState = Annotation.Root({
   risk: Annotation<RiskAssessment | null>({ reducer: (_, r) => r, default: () => null }),
   approved: Annotation<boolean>({ reducer: (_, r) => r, default: () => false }),
   halted: Annotation<boolean>({ reducer: (_, r) => r, default: () => false }),
+  positionsOpened: Annotation<number>({ reducer: (_, r) => r, default: () => 0 }),
   decisions: Annotation<DecisionRecord[]>({
     reducer: (l, r) => l.concat(r),
     default: () => [],
@@ -57,7 +59,7 @@ export function buildOrchestrator(deps: OrchestratorDeps) {
 
   const scan = async () => {
     const candidates = await deps.scanMarket();
-    return { candidates, cursor: 0, snapshot: deps.getSnapshot() };
+    return { candidates, cursor: 0, snapshot: deps.getSnapshot(), positionsOpened: 0 };
   };
 
   const analyze = async (s: State) => {
@@ -72,7 +74,9 @@ export function buildOrchestrator(deps: OrchestratorDeps) {
       const quoteUsd = await deps.getQuoteUsdPrice(c.pool.mintY);
       const quoteProfile = buildQuoteProfile(c.pool.mintY, quoteUsd);
       return { analysis, quoteProfile };
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`⚠️ Analyse ${c.pool.name} échouée : ${msg}`);
       return { analysis: null, quoteProfile: null };
     }
   };
@@ -144,7 +148,14 @@ export function buildOrchestrator(deps: OrchestratorDeps) {
       typeof journalId === "number" ? journalId : undefined
     );
     record.note = res.note; // pour le résumé en mémoire uniquement
-    return { decisions: [record] };
+    // Rafraîchir le snapshot + compteur pour que le prochain candidat voie
+    // le capital réel et le nombre de positions déjà ouvertes ce cycle.
+    const opened = res.ok ? 1 : 0;
+    return {
+      decisions: [record],
+      snapshot: deps.getSnapshot(),
+      positionsOpened: s.positionsOpened + opened,
+    };
   };
 
   const skip = (s: State) => {
@@ -190,7 +201,10 @@ export function buildOrchestrator(deps: OrchestratorDeps) {
     return "skip";
   };
   const afterSupervise = (s: State) => (s.approved ? "execute" : "skip");
-  const afterAdvance = (s: State) => (s.cursor < s.candidates.length ? "analyze" : END);
+  const afterAdvance = (s: State) => {
+    if (s.positionsOpened >= config.MAX_POSITIONS_PER_SCAN) return END;
+    return s.cursor < s.candidates.length ? "analyze" : END;
+  };
 
   // ── Assemblage ──
 

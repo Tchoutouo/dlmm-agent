@@ -14,6 +14,8 @@
     "execute": "tsx src/execute.ts",
     "live": "tsx src/live.ts",
     "whales": "tsx src/whales.ts",
+    "check": "tsx scripts/check-balance.ts",
+    "daemon": "tsx scripts/daemon.ts",
     "devnet:wallet": "tsx scripts/generate-wallet.ts",
     "devnet:check": "tsx scripts/devnet-check.ts",
     "devnet:run": "tsx scripts/devnet-run.ts",

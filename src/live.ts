@@ -36,8 +36,12 @@ async function main() {
     console.log(
       `NAV réel $${snap.navUsd.toFixed(0)} (cash on-chain $${snap.cashUsd.toFixed(0)}) | positions ${snap.positions.length} | drawdown ${snap.drawdownPct.toFixed(1)}%`
     );
+    const rebalanced = await manager.rebalanceOutOfRange(config.REBALANCE_OUT_OF_RANGE_MIN, executor, journal);
+    if (rebalanced > 0) console.log(`${rebalanced} position(s) rebalancée(s)`);
+    const closedTP = await manager.closeAtThresholds(config.TAKE_PROFIT_PCT, config.STOP_LOSS_PCT, executor, journal);
+    if (closedTP > 0) console.log(`${closedTP} position(s) fermée(s) par TP/SL`);
     const closed = await manager.closeDue(config.PAPER_HOLDING_DAYS, executor, journal);
-    if (closed > 0) console.log(`${closed} position(s) clôturée(s)`);
+    if (closed > 0) console.log(`${closed} position(s) clôturée(s) à échéance`);
   };
 
   await runOnce();

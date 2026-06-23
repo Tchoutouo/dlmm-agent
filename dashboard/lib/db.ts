@@ -38,5 +38,11 @@ function ensureApprovals(d: Database.Database): void {
       bin_step INTEGER NOT NULL, hedged INTEGER NOT NULL, rationale TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'PENDING', decided_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS close_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      pool_address TEXT NOT NULL, position_pubkey TEXT NOT NULL, pool_name TEXT NOT NULL,
+      requested_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING',
+      result_ok INTEGER, result_note TEXT, result_tx TEXT
+    );
   `);
 }

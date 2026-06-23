@@ -15,7 +15,8 @@ async function main() {
   const deps = createProductionDeps(clients);
   const graph = buildOrchestrator(deps).compile();
 
-  const result = await graph.invoke({ mode: "autonomous" });
+  // topN × ~6 nœuds par candidat + marge → 150 couvre jusqu'à ~20 candidats
+  const result = await graph.invoke({ mode: "autonomous" }, { recursionLimit: 150 });
 
   console.log(`\n── Décisions (${result.decisions.length}) ──`);
   for (const d of result.decisions) {
@@ -27,6 +28,7 @@ async function main() {
 
   clients.journal.close();
   clients.portfolio.close();
+  clients.manager?.close();
 }
 
 main().catch((err) => {

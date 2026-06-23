@@ -1,5 +1,6 @@
 import type { MeteoraPair, Pool } from "../types.js";
 import { config } from "../config.js";
+import { logger } from "../lib/logger.js";
 
 /** Réponse paginée de GET /pools */
 interface PaginatedPools {
@@ -10,6 +11,8 @@ interface PaginatedPools {
   data: MeteoraPair[];
 }
 
+const log = logger.child({ module: "MeteoraClient" });
+
 /**
  * Client de LECTURE de l'API Meteora DLMM.
  *
@@ -18,6 +21,7 @@ interface PaginatedPools {
  * L'OHLCV reste sur le même domaine via DataApiClient.
  *
  * Pattern : lecture via API REST (pas de clé privée), écriture via SDK.
+ * Chaque requête a un timeout de 10 s et 2 tentatives de retry (backoff : 1 s → 2 s).
  */
 export class MeteoraClient {
   constructor(private readonly base: string = config.METEORA_DATA_API_BASE) {}
@@ -41,12 +45,37 @@ export class MeteoraClient {
     return this.normalize(raw);
   }
 
-  private async fetchJson<T>(url: string): Promise<T> {
-    const res = await fetch(url, { headers: { accept: "application/json" } });
-    if (!res.ok) {
-      throw new Error(`Meteora API ${url} -> HTTP ${res.status} ${res.statusText}`);
+  private async fetchJson<T>(url: string, attempt = 0): Promise<T> {
+    const maxAttempts = 3;
+    const timeoutMs = 10_000;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+
+    try {
+      const res = await fetch(url, {
+        signal: ctrl.signal,
+        headers: { accept: "application/json" },
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      }
+      return (await res.json()) as T;
+    } catch (err) {
+      const isTimeout = err instanceof Error && err.name === "AbortError";
+      const msg = isTimeout ? "timeout (10 s)" : (err instanceof Error ? err.message : String(err));
+
+      if (attempt < maxAttempts - 1) {
+        const delayMs = 1_000 * (attempt + 1);
+        log.warn("Meteora API — nouvelle tentative", { url, attempt: attempt + 1, reason: msg, delayMs });
+        await new Promise((r) => setTimeout(r, delayMs));
+        return this.fetchJson<T>(url, attempt + 1);
+      }
+
+      log.error("Meteora API — abandon après retries", { url, attempts: maxAttempts, reason: msg });
+      throw new Error(`Meteora API ${url} -> ${msg}`);
+    } finally {
+      clearTimeout(timer);
     }
-    return (await res.json()) as T;
   }
 
   /** Normalise une pool brute vers l'interface Pool interne. */
@@ -65,7 +94,7 @@ export class MeteoraClient {
       fees24h: toNum(p.fees?.["24h"]),
       feeTvl24h: toNum(p.fee_tvl_ratio?.["24h"]),
       feeTvl1h: toNum(p.fee_tvl_ratio?.["1h"]),
-      isVerified: Boolean(p.token_x.is_verified),
+      isVerified: Boolean(p.token_x.is_verified) || Boolean(p.token_y?.is_verified),
       isBlacklisted: Boolean(p.is_blacklisted),
     };
   }
