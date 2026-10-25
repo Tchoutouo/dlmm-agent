@@ -28,6 +28,27 @@ export function sumWalletUsd(balances: TokenBalance[], prices: Record<string, nu
   return { totalUsd, byMint };
 }
 
+/**
+ * Sépare le wallet en cash DÉPLOYABLE (SOL + stablecoins) et en INVENTAIRE
+ * (tous les autres tokens : restes de positions fermées, souvent du memecoin).
+ * L'inventaire est une exposition au marché, pas du cash : le compter comme
+ * cash ferait croire à l'agent de risque qu'il dispose de capital stable.
+ */
+export function splitWallet(
+  balances: TokenBalance[],
+  prices: Record<string, number>,
+  isCash: (mint: string) => boolean
+): { cashUsd: number; inventory: Array<{ mint: string; usd: number }> } {
+  let cashUsd = 0;
+  const inventory: Record<string, number> = {};
+  for (const b of balances) {
+    const usd = b.amount * (prices[b.mint] ?? 0);
+    if (isCash(b.mint)) cashUsd += usd;
+    else inventory[b.mint] = (inventory[b.mint] ?? 0) + usd;
+  }
+  return { cashUsd, inventory: Object.entries(inventory).map(([mint, usd]) => ({ mint, usd })) };
+}
+
 /** Lit les soldes on-chain : SOL natif + tous les comptes SPL / Token-2022. */
 export async function readWalletBalances(
   connection: Connection,

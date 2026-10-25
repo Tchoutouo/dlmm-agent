@@ -112,8 +112,9 @@ export function createProductionDeps(c: ProductionClients): OrchestratorDeps {
     getCandles: (addr) => c.data.getOhlcv(addr, "1h", 96),
     getQuoteUsdPrice: (mint) => c.oracle.getUsdPrice(mint),
     getForwardVol: async (addr, candles) => (await predictForwardVol(candles, "1h", addr))?.dailyVol ?? null,
-    // Utilise le snapshot live (positions réelles) si disponible, sinon paper
-    getSnapshot: () => manager ? manager.snapshot() : c.portfolio.snapshot(),
+    // Live : photo on-chain (cash déployable = SOL + stables ; autres tokens = inventaire
+    // exposé). Si elle est indisponible, le scan échoue plutôt que de trader à l'aveugle.
+    getSnapshot: () => (manager ? manager.realSnapshot() : c.portfolio.snapshot()),
     // Le risque évalue la position que l'exécuteur ouvrira réellement (spot, ≤ 69 bins)
     planPosition: (cand, analysis) => planPosition("spot", cand.pool, analysis.suggestedRange),
     recordDecision: (d) =>

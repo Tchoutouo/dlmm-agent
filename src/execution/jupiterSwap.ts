@@ -1,5 +1,6 @@
 import type { Connection, Keypair } from "@solana/web3.js";
 import { VersionedTransaction } from "@solana/web3.js";
+import { checkQuote, checkSwapMessage } from "./swapGuard.js";
 
 export const SOL_MINT  = "So11111111111111111111111111111111111111112";
 export const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -52,7 +53,12 @@ export interface SwapResult {
  * `inputAmountUnits` est en base units : lamports pour SOL (1e9),
  * micro-USDC pour USDC (1e6), etc.
  *
- * En mode `dryRun` : récupère uniquement le devis, n'envoie rien.
+ * La transaction vient d'une API distante : avant de la signer, on vérifie le
+ * devis (tokens, montant, slippage borné, impact ≤ 1 %), chaque instruction
+ * (swapGuard), puis on la simule. Après envoi, le résultat on-chain est lu :
+ * une transaction confirmée mais en échec n'est jamais rapportée comme réussie.
+ *
+ * En mode `dryRun` : récupère et contrôle uniquement le devis, n'envoie rien.
  */
 export async function jupiterSwap(
   connection: Connection,
@@ -75,6 +81,8 @@ export async function jupiterSwap(
       return { ok: false, note: `Jupiter quote: ${(await quoteRes.text()).slice(0, 120)}` };
     }
     const quote = (await quoteRes.json()) as Record<string, unknown>;
+    const quoteIssue = checkQuote(quote, { inputMint, outputMint, amount: inputAmountUnits });
+    if (quoteIssue) return { ok: false, note: `Swap refusé : ${quoteIssue}` };
 
     if (dryRun) {
       const inAmt  = Number(quote.inAmount);
@@ -100,13 +108,34 @@ export async function jupiterSwap(
     if (!swapRes.ok) {
       return { ok: false, note: `Jupiter swap: ${(await swapRes.text()).slice(0, 120)}` };
     }
-    const { swapTransaction } = (await swapRes.json()) as { swapTransaction: string };
+    const { swapTransaction, lastValidBlockHeight } = (await swapRes.json()) as {
+      swapTransaction: string;
+      lastValidBlockHeight?: number;
+    };
 
-    // 3. Désérialiser → signer → confirmer
+    // 3. Inspecter → simuler → signer → envoyer → lire le résultat on-chain
     const tx = VersionedTransaction.deserialize(Buffer.from(swapTransaction, "base64"));
+    const txIssue = checkSwapMessage(tx.message, keypair.publicKey);
+    if (txIssue) return { ok: false, note: `Swap refusé : ${txIssue}` };
+
+    const sim = await connection.simulateTransaction(tx, { sigVerify: false });
+    if (sim.value.err) {
+      return { ok: false, note: `Swap refusé : la simulation échoue (${JSON.stringify(sim.value.err).slice(0, 80)})` };
+    }
+
     tx.sign([keypair]);
     const txHash = await connection.sendRawTransaction(tx.serialize(), { maxRetries: 3 });
-    await connection.confirmTransaction(txHash, "confirmed");
+    const conf = await connection.confirmTransaction(
+      {
+        signature: txHash,
+        blockhash: tx.message.recentBlockhash,
+        lastValidBlockHeight: lastValidBlockHeight ?? (await connection.getLatestBlockhash()).lastValidBlockHeight,
+      },
+      "confirmed"
+    );
+    if (conf.value.err) {
+      return { ok: false, note: `Swap échoué on-chain (${JSON.stringify(conf.value.err).slice(0, 80)})`, txHash };
+    }
 
     return { ok: true, note: `Swap confirmé`, txHash };
   } catch (err) {

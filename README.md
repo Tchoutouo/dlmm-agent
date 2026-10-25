@@ -315,6 +315,13 @@ dashboard peut approuver des trades et demander des clôtures, donc
 - toute requête qui modifie (`POST /api/…`) doit venir de la même origine et être
   du JSON : un site tiers ne peut pas approuver un trade à ta place (CSRF).
 
+Une approbation porte sur un prix et un portefeuille datés : elle **expire** après
+`APPROVAL_TTL_MIN` (120 min) et, avant toute ouverture, l'agent la **revalide**
+(prix à moins de 3 % du prix approuvé, nouvelle analyse et agent de risque sur le
+portefeuille courant, au plus `MAX_POSITIONS_PER_SCAN` ouvertures par tick). La
+position s'ouvre au prix courant, pour min(taille approuvée, taille revalidée) ;
+le motif de chaque abandon est conservé dans la file.
+
 Boucle superviseur complète : `npm run paper -- --supervised --loop` (agent, à la
 racine) + le dashboard ouvert. Esthétique « terminal de recherche » : fond sombre,
 données en monospace, accent ambre.
@@ -371,7 +378,13 @@ LIVE, la position est enregistrée ; ensuite, à chaque tick :
   conversion des montants + fees réclamables en USD (`positionValueUsd`, testé) ;
 - **clôture** à l'échéance (`PAPER_HOLDING_DAYS`) via l'exécuteur réel (donc le
   garde-fou), avec l'issue réelle bouclée dans le journal → l'Agent 5 apprend de
-  vrais résultats.
+  vrais résultats ;
+- **rééquilibrage** d'une position hors range : elle est **fermée**, sans
+  réouverture automatique — la réentrée passe par le scan suivant, donc par
+  l'agent de risque (disjoncteurs, limite journalière, veto, plafonds).
+
+Un prix USD manquant ne valorise jamais un token à 0 : le marquage est reporté
+(dernière valeur conservée), ce qui évite un faux stop-loss sur donnée absente.
 
 ```bash
 npm run live           # un tick (mark + clôture des échues)
@@ -379,8 +392,8 @@ npm run live -- --loop # tick toutes les heures
 ```
 
 Le marquage est en lecture seule (sûr même en DRY_RUN) ; la clôture respecte le
-garde-fou. La caisse interne (amorcée par `INITIAL_CASH_USD`) sert au
-dimensionnement du risque — lire les soldes réels du wallet est un raffinement.
+garde-fou. En live, l'agent de risque décide sur la **photo on-chain** du wallet
+(voir ci-dessous), pas sur une caisse interne.
 
 ## Couche ML — Prédiction de volatilité (optionnelle)
 
@@ -418,9 +431,21 @@ npm run whales -- <adresse_pool>
 
 ## Soldes wallet réels
 
-`readWalletUsd` lit le solde on-chain (SOL natif + comptes SPL / Token-2022) et le
-valorise via l'oracle. `LivePositionManager.realSnapshot()` l'utilise pour un NAV
-réel (cash on-chain + positions), utilisé par `npm run live`.
+`readWalletBalances` lit le solde on-chain (SOL natif + comptes SPL / Token-2022),
+valorisé via l'oracle. `LivePositionManager.realSnapshot()` en tire la photo
+utilisée par l'agent de risque en live (`npm run scan`, démon) :
+
+- **cash déployable** = SOL + stablecoins ;
+- **inventaire** = tous les autres tokens (restes de positions fermées, souvent du
+  memecoin) : compté comme **exposition**, pas comme cash, donc soumis aux plafonds ;
+- **pic de NAV** calibré une fois sur la première photo réelle, puis jamais abaissé
+  automatiquement : après une perte, le disjoncteur reste armé jusqu'à décision
+  humaine (corriger `live_meta.peak_nav` si le pic est erroné).
+
+Les swaps Jupiter de l'auto-swap sont contrôlés avant signature : devis conforme
+(tokens, montant, slippage borné, impact ≤ 1 %), transaction limitée aux
+programmes du swap et sans virement vers un compte tiers, simulation réussie ; le
+résultat on-chain est vérifié après envoi.
 
 ## Roadmap
 

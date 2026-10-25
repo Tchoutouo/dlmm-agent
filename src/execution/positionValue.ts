@@ -32,3 +32,20 @@ export function positionValueUsd(i: PositionValueInput): PositionValue {
   const feesUsd = feeX * i.priceXUsd + feeY * i.priceYUsd;
   return { valueUsd, feesUsd, markValueUsd: valueUsd + feesUsd };
 }
+
+/**
+ * Prix USD utilisables pour marquer une position : les DEUX doivent être
+ * connus et positifs. Sinon null — on ne marque pas : un prix absent valorisé
+ * à 0 ferait chuter la valeur de moitié et déclencherait un faux stop-loss.
+ */
+export function markablePrices(
+  prices: Record<string, number>,
+  mintX: string,
+  mintY: string
+): { priceXUsd: number; priceYUsd: number } | null {
+  const priceXUsd = prices[mintX];
+  const priceYUsd = prices[mintY];
+  if (priceXUsd === undefined || priceYUsd === undefined) return null;
+  if (!(priceXUsd > 0) || !(priceYUsd > 0)) return null;
+  return { priceXUsd, priceYUsd };
+}

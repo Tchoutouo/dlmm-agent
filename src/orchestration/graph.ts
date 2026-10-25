@@ -61,7 +61,7 @@ export function buildOrchestrator(deps: OrchestratorDeps) {
 
   const scan = async () => {
     const candidates = await deps.scanMarket();
-    return { candidates, cursor: 0, snapshot: deps.getSnapshot(), positionsOpened: 0 };
+    return { candidates, cursor: 0, snapshot: await deps.getSnapshot(), positionsOpened: 0 };
   };
 
   const analyze = async (s: State) => {
@@ -158,7 +158,7 @@ export function buildOrchestrator(deps: OrchestratorDeps) {
     const opened = res.ok ? 1 : 0;
     return {
       decisions: [record],
-      snapshot: deps.getSnapshot(),
+      snapshot: await deps.getSnapshot(),
       positionsOpened: s.positionsOpened + opened,
     };
   };

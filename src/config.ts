@@ -93,6 +93,9 @@ const schema = z.object({
   // Forme des positions PAPER : "spot" (deux côtés, centré) ou "sol_bidask"
   // (un seul côté en SOL/stable, bins sous le prix). Pas encore utilisé en live.
   PAPER_STRATEGY: z.enum(["spot", "sol_bidask"]).default("spot"),
+  // Durée de vie d'une proposition du mode supervisé (minutes) : au-delà, elle expire
+  // même approuvée. Avant toute ouverture, l'agent la revalide (prix, risque).
+  APPROVAL_TTL_MIN: z.coerce.number().positive().default(120),
   // Perte journalière maximale (% de la NAV d'ouverture du jour UTC) → HALT. 0 = désactivé.
   MAX_DAILY_LOSS_PCT: z.coerce.number().min(0).default(5),
   // Whale-tracking on-chain : seuil USD d'un swap « baleine » et profondeur de scan.

@@ -11,6 +11,9 @@ import { ApprovalQueue } from "./approvalQueue.js";
 import { predictForwardVol } from "../ml/volatilityClient.js";
 import { config } from "../config.js";
 import { planPosition } from "../analytics/positionPlan.js";
+import { MAX_PRICE_DEVIATION } from "../execution/realExecutor.js";
+import { priceDeviation } from "../execution/executionMath.js";
+import type { DeepAnalysis, ScoredOpportunity } from "../types.js";
 
 /**
  * Deps de l'orchestrateur en mode PAPER : le snapshot et l'exécution viennent du
@@ -111,63 +114,130 @@ export async function paperTick(broker: PaperBroker, c: ProductionClients): Prom
 }
 
 /**
+ * Ouvre les propositions APPROUVÉES par l'humain, après revalidation complète.
+ *
+ * Une approbation porte sur un prix et un portefeuille datés. Avant d'ouvrir :
+ *  - expirée (> APPROVAL_TTL_MIN depuis sa création) → abandonnée ;
+ *  - prix actuel à plus de 3 % du prix approuvé → abandonnée (l'humain a validé
+ *    une autre situation) ;
+ *  - nouvelle analyse + agent de risque sur le portefeuille COURANT (disjoncteurs,
+ *    plafonds cumulés avec les ouvertures de ce tick) → abandonnée si refusée ;
+ *  - au plus MAX_POSITIONS_PER_SCAN ouvertures par tick (les suivantes attendent).
+ * La taille ouverte = min(taille approuvée, taille revalidée), au prix courant.
+ */
+export async function openApprovedProposals(
+  broker: PaperBroker,
+  c: ProductionClients,
+  queue: ApprovalQueue,
+  now: Date = new Date()
+): Promise<{ opened: number; expired: number }> {
+  const nowSec = Math.floor(now.getTime() / 1000);
+  let opened = 0;
+  let expired = queue.expireStale(config.APPROVAL_TTL_MIN, now);
+
+  const approved = queue.listByStatus("APPROVED").sort((a, b) => a.id - b.id);
+  for (const a of approved) {
+    if (opened >= config.MAX_POSITIONS_PER_SCAN) break; // les suivantes attendent le prochain tick
+
+    let candidate: ScoredOpportunity;
+    let analysis: DeepAnalysis;
+    let quoteUsd: number;
+    try {
+      const fresh = await c.market.getPair(a.poolAddress);
+      candidate = {
+        pool: fresh,
+        score: 0,
+        components: { yieldScore: 0, sustainabilityScore: 0, depthScore: 0 },
+        estimatedFeeApr: feeAprProxy(fresh),
+        reasons: [],
+      };
+      analysis = deepAnalyze(candidate, await c.data.getOhlcv(fresh.address, "1h", 168));
+      quoteUsd = await c.oracle.getUsdPrice(fresh.mintY);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(`  ⏭️  ${a.poolName} : revalidation impossible (${msg.slice(0, 60)}) — nouvel essai au prochain tick`);
+      continue;
+    }
+
+    const pool = candidate.pool;
+    const drift = priceDeviation(pool.currentPrice, a.entryPrice);
+    if (drift > MAX_PRICE_DEVIATION) {
+      queue.markExpired(a.id, `prix ${(drift * 100).toFixed(1)} % loin du prix approuvé — à revalider`);
+      expired++;
+      continue;
+    }
+
+    const plan = planPosition(config.PAPER_STRATEGY, pool, analysis.suggestedRange);
+    const risk = assessRisk(candidate, analysis, broker.snapshot(), undefined, buildQuoteProfile(pool.mintY, quoteUsd), plan);
+    if (risk.verdict !== "APPROVE" && risk.verdict !== "APPROVE_REDUCED") {
+      queue.markExpired(a.id, `refusée à la revalidation : ${risk.verdict} — ${risk.reasons.join(" | ").slice(0, 160)}`);
+      expired++;
+      continue;
+    }
+
+    const sizeUsd = Math.min(a.sizeUsd, risk.recommendedSizeUsd);
+    const jid = c.journal.record({
+      timestamp: now.toISOString(),
+      poolAddress: pool.address,
+      poolName: pool.name,
+      decision: "ENTER",
+      score: 0,
+      estimatedFeeApr: analysis.riskAdjustedNetApr,
+      sizeUsd,
+      rangeLow: plan.rangeLow,
+      rangeHigh: plan.rangeHigh,
+      estimatedIlPct: analysis.ilAt1Sigma,
+      features: {
+        feeRegime: analysis.feeRegime.label,
+        volatilityAnnual: analysis.volatility.sigmaAnnual,
+        binStep: pool.binStep,
+        bindingCap: risk.bindingCap,
+        hedged: risk.hedge.recommended,
+        expectedNetApr: analysis.riskAdjustedNetApr,
+        shape: plan.shape,
+      },
+      rationale: `[approuvé, revalidé] ${[...analysis.rationale, ...risk.reasons].join(" | ")}`,
+    });
+    broker.open({
+      journalId: jid,
+      poolAddress: pool.address,
+      poolName: pool.name,
+      mintX: pool.mintX,
+      mintY: pool.mintY,
+      sizeUsd,
+      entryPrice: pool.currentPrice,
+      rangeLow: plan.rangeLow,
+      rangeHigh: plan.rangeHigh,
+      feeAprAnnual: feeAprProxy(pool),
+      nowSec,
+      shape: plan.shape,
+      binStep: pool.binStep,
+      quoteUsdEntry: quoteUsd,
+    });
+    queue.markExecuted(a.id, `ouverte $${sizeUsd.toFixed(2)} au prix ${pool.currentPrice.toPrecision(6)}`);
+    opened++;
+  }
+  for (const r of queue.listByStatus("REJECTED")) queue.markExecuted(r.id, "rejetée par l'humain");
+  return { opened, expired };
+}
+
+/**
  * Un tick de paper trading SUPERVISÉ (human-in-the-loop via la file) :
- *   1. ouvre les approbations résolues APPROVED du tick précédent ;
+ *   1. ouvre les approbations APPROUVÉES, après revalidation (openApprovedProposals) ;
  *   2. gère les positions vivantes ;
  *   3. analyse le marché et ENFILE les entrées approuvées par le risque, sans
- *      les ouvrir — le dashboard décide. Les rejets sont simplement classés.
+ *      les ouvrir — le dashboard décide. Une pool déjà proposée n'est pas
+ *      reproposée tant que sa proposition est en jeu.
  */
 export async function paperTickSupervised(
   broker: PaperBroker,
   c: ProductionClients,
   queue: ApprovalQueue
 ): Promise<void> {
-  const nowSec = Math.floor(Date.now() / 1000);
-
-  // 1. Ouvrir les approbations validées par l'humain
-  let opened = 0;
-  for (const a of queue.listByStatus("APPROVED")) {
-    const jid = c.journal.record({
-      timestamp: new Date().toISOString(),
-      poolAddress: a.poolAddress,
-      poolName: a.poolName,
-      decision: "ENTER",
-      score: 0,
-      estimatedFeeApr: a.expectedNetApr,
-      sizeUsd: a.sizeUsd,
-      rangeLow: a.rangeLow,
-      rangeHigh: a.rangeHigh,
-      features: {
-        feeRegime: a.regime as never,
-        volatilityAnnual: a.volAnnual,
-        binStep: a.binStep,
-        hedged: a.hedged,
-        expectedNetApr: a.expectedNetApr,
-      },
-      rationale: `[approuvé] ${a.rationale}`,
-    });
-    broker.open({
-      journalId: jid,
-      poolAddress: a.poolAddress,
-      poolName: a.poolName,
-      mintX: a.mintX,
-      mintY: a.mintY,
-      sizeUsd: a.sizeUsd,
-      entryPrice: a.entryPrice,
-      rangeLow: a.rangeLow,
-      rangeHigh: a.rangeHigh,
-      feeAprAnnual: a.feeAprAnnual,
-      nowSec,
-      // La file ne stocke pas la forme : un range qui s'arrête au prix d'entrée est une bid-ask d'un côté
-      shape: a.rangeHigh <= a.entryPrice ? "sol_bidask" : "spot",
-      binStep: a.binStep,
-      quoteUsdEntry: await c.oracle.getUsdPrice(a.mintY).catch(() => undefined),
-    });
-    queue.markExecuted(a.id);
-    opened++;
-  }
-  for (const a of queue.listByStatus("REJECTED")) queue.markExecuted(a.id);
+  // 1. Ouvrir les approbations validées par l'humain, revalidées
+  const { opened, expired } = await openApprovedProposals(broker, c, queue);
   if (opened > 0) console.log(`${opened} approbation(s) ouverte(s)`);
+  if (expired > 0) console.log(`${expired} proposition(s) expirée(s) ou refusée(s) à la revalidation`);
 
   // 2. Gérer les positions vivantes
   await manageLivePositions(broker, c);
@@ -178,6 +248,7 @@ export async function paperTickSupervised(
   const snapshot = broker.snapshot();
   let queued = 0;
   for (const cand of candidates) {
+    if (queue.hasOpenProposal(cand.pool.address)) continue; // déjà proposée, en attente
     try {
       const candles = await c.data.getOhlcv(cand.pool.address, "1h", 168);
       const analysis = deepAnalyze(cand, candles);

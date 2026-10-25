@@ -43,7 +43,8 @@ export interface OrchestratorDeps {
   scanMarket(): Promise<ScoredOpportunity[]>;
   getCandles(poolAddress: string): Promise<Candle[]>;
   getQuoteUsdPrice(mint: string): Promise<number>;
-  getSnapshot(): PortfolioSnapshot;
+  /** Photo du portefeuille (asynchrone en live : lecture on-chain du wallet). */
+  getSnapshot(): PortfolioSnapshot | Promise<PortfolioSnapshot>;
   /**
    * Optionnel : forme et range de la position qui sera ouverte (ex. bid-ask d'un
    * côté). Absent = spot sur le range suggéré par l'analyse.
