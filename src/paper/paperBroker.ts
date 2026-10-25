@@ -10,6 +10,7 @@ import {
   type PaperPosition,
 } from "./paperPnl.js";
 import { config } from "../config.js";
+import { trackDailyLoss } from "../risk/dailyLoss.js";
 
 /**
  * Broker de paper trading : tient des positions simulées persistées, les marque
@@ -194,7 +195,8 @@ export class PaperBroker {
     for (const p of positions) {
       exposureByPool[p.poolAddress] = (exposureByPool[p.poolAddress] ?? 0) + p.valueUsd;
     }
-    return { navUsd, cashUsd, deployedUsd, peakNavUsd: peak, drawdownPct, positions, exposureByPool };
+    const dailyLossPct = trackDailyLoss((k) => this.meta(k), (k, v) => this.setMeta(k, v), navUsd);
+    return { navUsd, cashUsd, deployedUsd, peakNavUsd: peak, drawdownPct, dailyLossPct, positions, exposureByPool };
   }
 
   private valueOf(id: number): number {

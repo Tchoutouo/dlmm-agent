@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { PortfolioSnapshot, PortfolioPosition } from "../types.js";
 import { config } from "../config.js";
+import { trackDailyLoss } from "../risk/dailyLoss.js";
 
 /**
  * Portefeuille persistant (SQLite). Suit le cash, les positions ouvertes, le NAV
@@ -149,7 +150,8 @@ export class Portfolio {
       exposureByPool[p.poolAddress] = (exposureByPool[p.poolAddress] ?? 0) + p.valueUsd;
     }
 
-    return { navUsd, cashUsd, deployedUsd, peakNavUsd, drawdownPct, positions, exposureByPool };
+    const dailyLossPct = trackDailyLoss((k) => this.getMeta(k), (k, v) => this.setMeta(k, v), navUsd);
+    return { navUsd, cashUsd, deployedUsd, peakNavUsd, drawdownPct, dailyLossPct, positions, exposureByPool };
   }
 
   close(): void {

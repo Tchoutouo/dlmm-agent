@@ -19,6 +19,7 @@ export function riskParamsFromConfig(): RiskParams {
     maxPositionUsd: config.MAX_POSITION_USD,
     minPositionUsd: config.MIN_POSITION_USD,
     maxDrawdown: config.MAX_DRAWDOWN_PCT / 100,
+    maxDailyLoss: config.MAX_DAILY_LOSS_PCT / 100,
     maxPortfolioExposure: config.MAX_PORTFOLIO_EXPOSURE_PCT / 100,
     maxPoolConcentration: config.MAX_POOL_CONCENTRATION_PCT / 100,
     maxPoolLiquidityShare: config.MAX_POOL_LIQUIDITY_SHARE_PCT / 100,
@@ -92,6 +93,35 @@ export function assessRisk(
       params.maxDrawdown * 100
     ).toFixed(0)}%`,
   });
+
+  // ── 1 bis. Limite de perte journalière ──
+  if (params.maxDailyLoss && snapshot.dailyLossPct !== undefined) {
+    const lossPct = snapshot.dailyLossPct;
+    const maxPct = (params.maxDailyLoss * 100).toFixed(0);
+    if (lossPct / 100 >= params.maxDailyLoss) {
+      return finalize(
+        "HALT",
+        0,
+        sizing,
+        stressLossUsd,
+        hedge,
+        [
+          ...checks,
+          {
+            name: "daily_loss",
+            passed: false,
+            detail: `Perte du jour ${lossPct.toFixed(1)}% ≥ seuil ${maxPct}% — entrées suspendues jusqu'à demain (UTC)`,
+          },
+        ],
+        ["LIMITE JOURNALIÈRE : perte maximale du jour atteinte, plus d'entrée aujourd'hui"]
+      );
+    }
+    checks.push({
+      name: "daily_loss",
+      passed: true,
+      detail: `Perte du jour ${lossPct.toFixed(1)}% < ${maxPct}%`,
+    });
+  }
 
   // ── 2. Checks de veto durs ──
   checks.push(check(

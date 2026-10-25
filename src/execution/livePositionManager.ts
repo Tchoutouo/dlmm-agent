@@ -11,6 +11,7 @@ import type { RealExecutor } from "./realExecutor.js";
 import { positionValueUsd } from "./positionValue.js";
 import { readWalletUsd } from "./walletBalance.js";
 import { config } from "../config.js";
+import { trackDailyLoss } from "../risk/dailyLoss.js";
 
 interface LiveRow {
   id: number;
@@ -432,7 +433,8 @@ export class LivePositionManager {
     const drawdownPct = peak > 0 ? ((peak - navUsd) / peak) * 100 : 0;
     const exposureByPool: Record<string, number> = {};
     for (const p of positions) exposureByPool[p.poolAddress] = (exposureByPool[p.poolAddress] ?? 0) + p.valueUsd;
-    return { navUsd, cashUsd, deployedUsd, peakNavUsd: peak, drawdownPct, positions, exposureByPool };
+    const dailyLossPct = trackDailyLoss((k) => this.meta(k), (k, v) => this.setMeta(k, v), navUsd);
+    return { navUsd, cashUsd, deployedUsd, peakNavUsd: peak, drawdownPct, dailyLossPct, positions, exposureByPool };
   }
 
   /**
@@ -536,6 +538,7 @@ export class LivePositionManager {
       }
     }
 
-    return { navUsd, cashUsd, deployedUsd, peakNavUsd: peak, drawdownPct, positions, exposureByPool };
+    const dailyLossPct = trackDailyLoss((k) => this.meta(k), (k, v) => this.setMeta(k, v), navUsd);
+    return { navUsd, cashUsd, deployedUsd, peakNavUsd: peak, drawdownPct, dailyLossPct, positions, exposureByPool };
   }
 }

@@ -32,6 +32,7 @@ export interface MeteoraPair {
     decimals: number;
     is_verified: boolean;
     price: number;
+    market_cap?: number;
   };
   token_y: {
     address: string;
@@ -39,6 +40,7 @@ export interface MeteoraPair {
     decimals: number;
     is_verified: boolean;
     price: number;
+    market_cap?: number;
   };
   pool_config: {
     bin_step: number;
@@ -81,6 +83,12 @@ export interface Pool {
   feeTvl1h: number;
   isVerified: boolean;
   isBlacklisted: boolean;
+  /** Mint du token de base (le côté non-quote : ni SOL ni stablecoin). Absent = inconnu. */
+  baseMint?: string;
+  /** Market cap du token de base (USD). Absent = inconnu, le filtre ne s'applique pas. */
+  baseMarketCapUsd?: number;
+  /** Volume des 4 dernières heures (USD). Absent = inconnu, le filtre ne s'applique pas. */
+  volume4h?: number;
 }
 
 /** Poids du modèle de score multi-critères (Weighted Scoring Model). */
@@ -229,6 +237,8 @@ export interface PortfolioSnapshot {
   deployedUsd: number; // capital en positions
   peakNavUsd: number;
   drawdownPct: number; // (peak - nav) / peak × 100
+  /** Perte depuis l'ouverture du jour UTC (% de la NAV d'ouverture, ≥ 0). Absent = non suivi. */
+  dailyLossPct?: number;
   positions: PortfolioPosition[];
   exposureByPool: Record<string, number>; // adresse -> USD
 }
@@ -238,6 +248,8 @@ export interface RiskParams {
   maxPositionUsd: number;
   minPositionUsd: number;
   maxDrawdown: number; // fraction
+  /** Perte journalière max (fraction). Absent ou 0 = désactivé. */
+  maxDailyLoss?: number;
   maxPortfolioExposure: number;
   maxPoolConcentration: number;
   maxPoolLiquidityShare: number;

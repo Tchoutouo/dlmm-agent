@@ -1,6 +1,7 @@
 import type { MeteoraPair, Pool } from "../types.js";
 import { config } from "../config.js";
 import { logger } from "../lib/logger.js";
+import { SOL_MINT, STABLE_MINTS } from "./priceOracle.js";
 
 /** Réponse paginée de GET /pools */
 interface PaginatedPools {
@@ -89,6 +90,9 @@ export class MeteoraClient {
 
   /** Normalise une pool brute vers l'interface Pool interne. */
   private normalize(p: MeteoraPair): Pool {
+    // Token de base = le côté « le moins quote » (ex. BONK dans SOL-BONK comme dans
+    // BONK-SOL, SOL dans SOL-USDC comme dans USDC-SOL)
+    const base = quoteRank(p.token_y.address) < quoteRank(p.token_x.address) ? p.token_y : p.token_x;
     return {
       address: p.address,
       name: p.name,
@@ -106,8 +110,17 @@ export class MeteoraClient {
       // Les deux tokens : sinon tout memecoin apparié à SOL/USDC (vérifiés) passerait.
       isVerified: Boolean(p.token_x.is_verified) && Boolean(p.token_y?.is_verified),
       isBlacklisted: Boolean(p.is_blacklisted),
+      baseMint: base.address,
+      baseMarketCapUsd: toNum(base.market_cap),
+      volume4h: toNum(p.volume?.["4h"]),
     };
   }
+}
+
+/** Rang de quote : 0 = token ordinaire, 1 = SOL, 2 = stablecoin. */
+function quoteRank(mint: string): number {
+  if (STABLE_MINTS.has(mint)) return 2;
+  return mint === SOL_MINT ? 1 : 0;
 }
 
 /** Conversion robuste vers number (gère null, undefined, NaN). */

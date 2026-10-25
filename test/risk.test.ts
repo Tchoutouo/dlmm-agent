@@ -77,6 +77,7 @@ function snapshot(s: Partial<PortfolioSnapshot> = {}): PortfolioSnapshot {
     deployedUsd: s.deployedUsd ?? 0,
     peakNavUsd: s.peakNavUsd ?? 1000,
     drawdownPct: s.drawdownPct ?? 0,
+    dailyLossPct: s.dailyLossPct,
     positions: s.positions ?? [],
     exposureByPool: s.exposureByPool ?? {},
   };
@@ -92,6 +93,30 @@ describe("assessRisk — disjoncteur drawdown", () => {
   it("ne déclenche pas le disjoncteur sous le seuil", () => {
     const r = assessRisk(opportunity(pool()), analysis(), snapshot({ drawdownPct: 5 }), PARAMS);
     expect(r.verdict).not.toBe("HALT");
+  });
+});
+
+describe("assessRisk — limite de perte journalière", () => {
+  const withDaily = { ...PARAMS, maxDailyLoss: 0.05 };
+
+  it("HALT quand la perte du jour atteint le seuil", () => {
+    const r = assessRisk(opportunity(pool()), analysis(), snapshot({ dailyLossPct: 6 }), withDaily);
+    expect(r.verdict).toBe("HALT");
+    expect(r.recommendedSizeUsd).toBe(0);
+    expect(r.checks.some((c) => c.name === "daily_loss" && !c.passed)).toBe(true);
+  });
+
+  it("laisse passer sous le seuil et trace le contrôle", () => {
+    const r = assessRisk(opportunity(pool()), analysis(), snapshot({ dailyLossPct: 2 }), withDaily);
+    expect(r.verdict).not.toBe("HALT");
+    expect(r.checks.some((c) => c.name === "daily_loss" && c.passed)).toBe(true);
+  });
+
+  it("ignore la limite quand elle est désactivée ou non suivie", () => {
+    const off = assessRisk(opportunity(pool()), analysis(), snapshot({ dailyLossPct: 50 }), { ...PARAMS, maxDailyLoss: 0 });
+    const untracked = assessRisk(opportunity(pool()), analysis(), snapshot(), withDaily);
+    expect(off.verdict).not.toBe("HALT");
+    expect(untracked.verdict).not.toBe("HALT");
   });
 });
 
