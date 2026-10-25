@@ -87,6 +87,8 @@ export interface Pool {
   isBlacklisted: boolean;
   /** Mint du token de base (le côté non-quote : ni SOL ni stablecoin). Absent = inconnu. */
   baseMint?: string;
+  /** Symbole du token de base (détection des copies : même symbole, autre mint). */
+  baseSymbol?: string;
   /** Market cap du token de base (USD). Absent = inconnu, le filtre ne s'applique pas. */
   baseMarketCapUsd?: number;
   /** Volume des 4 dernières heures (USD). Absent = inconnu, le filtre ne s'applique pas. */

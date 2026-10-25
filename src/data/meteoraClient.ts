@@ -111,6 +111,7 @@ export class MeteoraClient {
       isVerified: Boolean(p.token_x.is_verified) && Boolean(p.token_y?.is_verified),
       isBlacklisted: Boolean(p.is_blacklisted),
       baseMint: base.address,
+      baseSymbol: base.symbol,
       baseMarketCapUsd: toNum(base.market_cap),
       volume4h: toNum(p.volume?.["4h"]),
       // OnlyY (1) : toutes les fees en token Y — utile seulement si Y est SOL ou un stable

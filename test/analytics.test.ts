@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { concentratedIl, suggestRange } from "../src/analytics/impermanentLoss.js";
-import { scanOpportunities, DEFAULT_WEIGHTS, isStablePool } from "../src/analytics/opportunityScanner.js";
+import { scanOpportunities, DEFAULT_WEIGHTS, isStablePool, findTokenCopies } from "../src/analytics/opportunityScanner.js";
 import { feeAprProxy } from "../src/analytics/feeApr.js";
 import type { Pool } from "../src/types.js";
 
@@ -104,6 +104,7 @@ function mockPool(p: Partial<Pool>): Pool {
     baseMarketCapUsd: p.baseMarketCapUsd,
     volume4h: p.volume4h,
     feesInQuote: p.feesInQuote,
+    baseSymbol: p.baseSymbol,
   };
 }
 
@@ -236,5 +237,39 @@ describe("scanOpportunities — fees versées en quote", () => {
     ];
     const res = scanOpportunities(pools, { topN: 2, minStableN: 0, quoteFeesBonus: 0 });
     expect(res[0]!.score).toBe(res[1]!.score);
+  });
+});
+
+describe("scanOpportunities — copies de tokens", () => {
+  const real = { baseSymbol: "PUMP", baseMint: "pumpReal", baseMarketCapUsd: 1_984_000_000 };
+  const copy = { baseSymbol: "pump", baseMint: "pumpCopy", baseMarketCapUsd: 3_000_000 };
+
+  it("findTokenCopies : même symbole (casse ignorée), plus petite market cap = copie", () => {
+    const copies = findTokenCopies([
+      mockPool({ name: "PUMP-SOL", ...real }),
+      mockPool({ name: "PUMP-SOL copie", ...copy }),
+      mockPool({ name: "OTHER-SOL", baseSymbol: "OTHER", baseMint: "other", baseMarketCapUsd: 5e6 }),
+    ]);
+    expect([...copies]).toEqual(["pumpCopy"]);
+  });
+
+  it("écarte la copie même si elle passe tous les autres filtres", () => {
+    const pools = [
+      mockPool({ name: "PUMP-SOL", volume24h: 200_000, ...real }),
+      mockPool({ name: "PUMP-SOL copie", volume24h: 300_000, ...copy }),
+    ];
+    const names = (exclude: boolean) =>
+      scanOpportunities(pools, { topN: 10, minStableN: 0, onePoolPerToken: false, excludeTokenCopies: exclude })
+        .map((o) => o.pool.name);
+    expect(names(true)).toEqual(["PUMP-SOL"]);
+    expect(names(false)).toContain("PUMP-SOL copie");
+  });
+
+  it("sans market cap connue, aucun verdict de copie", () => {
+    const copies = findTokenCopies([
+      mockPool({ baseSymbol: "X", baseMint: "a", baseMarketCapUsd: 1e6 }),
+      mockPool({ baseSymbol: "X", baseMint: "b" }),
+    ]);
+    expect(copies.size).toBe(0);
   });
 });

@@ -84,6 +84,12 @@ const schema = z.object({
   // Bonus de score (0..1) pour les pools qui versent leurs fees en SOL/stable :
   // les fees ne perdent pas de valeur avec le memecoin. 0 = désactivé.
   QUOTE_FEES_SCORE_BONUS: z.coerce.number().min(0).max(1).default(0.1),
+  // Écarte les copies de tokens : même symbole qu'un autre token mais market cap
+  // plus faible (souvent une réplique récente qui imite l'original).
+  EXCLUDE_TOKEN_COPIES: z
+    .string()
+    .default("true")
+    .transform((v) => v.toLowerCase() === "true"),
   // Forme des positions PAPER : "spot" (deux côtés, centré) ou "sol_bidask"
   // (un seul côté en SOL/stable, bins sous le prix). Pas encore utilisé en live.
   PAPER_STRATEGY: z.enum(["spot", "sol_bidask"]).default("spot"),

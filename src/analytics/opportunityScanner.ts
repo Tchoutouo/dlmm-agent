@@ -41,6 +41,8 @@ export interface ScanOptions {
   onePoolPerToken?: boolean;
   /** Bonus de score (0..1) des pools à fees versées en SOL/stable (0 = aucun). */
   quoteFeesBonus?: number;
+  /** Écarter les copies : même symbole qu'un token à plus grosse market cap. */
+  excludeTokenCopies?: boolean;
   /** Nombre total d'opportunités à renvoyer. */
   topN?: number;
   /**
@@ -59,6 +61,7 @@ const DEFAULTS: Required<Omit<ScanOptions, "weights">> = {
   minRecentVolumeRatio: config.MIN_RECENT_VOLUME_RATIO,
   onePoolPerToken: true,
   quoteFeesBonus: config.QUOTE_FEES_SCORE_BONUS,
+  excludeTokenCopies: config.EXCLUDE_TOKEN_COPIES,
   topN: 10,
   minStableN: 1,
 };
@@ -79,9 +82,14 @@ export function scanOpportunities(
   const weights = options.weights ?? DEFAULT_WEIGHTS;
   const opts = { ...DEFAULTS, ...options };
 
+  // Copies détectées sur tout l'univers fourni (avant les autres filtres, pour
+  // reconnaître l'original même s'il est lui-même écarté ensuite)
+  const copies = opts.excludeTokenCopies ? findTokenCopies(pools) : new Set<string>();
+
   // 1. Filtrage de sécurité (les champs absents = inconnus → filtre non appliqué)
   const filtered = pools.filter((p) => {
     if (p.isBlacklisted) return false;
+    if (p.baseMint && copies.has(p.baseMint)) return false;
     if (opts.verifiedOnly && !p.isVerified) return false;
     if (p.liquidityUsd < opts.minLiquidityUsd) return false;
     if (p.volume24h < opts.minVolume24h) return false;
@@ -155,6 +163,29 @@ export function scanOpportunities(
   }
 
   return sorted.slice(0, opts.topN);
+}
+
+/**
+ * Mints « copies » : tokens dont le symbole est aussi porté par un autre mint à
+ * plus grosse market cap (l'original). Sans market cap connue, pas de verdict.
+ */
+export function findTokenCopies(pools: Pool[]): Set<string> {
+  const original = new Map<string, { mint: string; mcap: number }>(); // symbole → mint dominant
+  const mcapOf = new Map<string, number>();
+  for (const p of pools) {
+    if (!p.baseMint || !p.baseSymbol || p.baseMarketCapUsd === undefined || isStablePool(p)) continue;
+    mcapOf.set(p.baseMint, p.baseMarketCapUsd);
+    const key = p.baseSymbol.trim().toUpperCase();
+    const cur = original.get(key);
+    if (!cur || p.baseMarketCapUsd > cur.mcap) original.set(key, { mint: p.baseMint, mcap: p.baseMarketCapUsd });
+  }
+  const copies = new Set<string>();
+  for (const p of pools) {
+    if (!p.baseMint || !p.baseSymbol || !mcapOf.has(p.baseMint)) continue;
+    const orig = original.get(p.baseSymbol.trim().toUpperCase());
+    if (orig && orig.mint !== p.baseMint) copies.add(p.baseMint);
+  }
+  return copies;
 }
 
 /**
