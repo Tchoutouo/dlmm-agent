@@ -13,6 +13,9 @@ interface PaginatedPools {
 
 const log = logger.child({ module: "MeteoraClient" });
 
+/** Erreur HTTP non transitoire (4xx hors 429) : inutile de réessayer. */
+class NonRetryableError extends Error {}
+
 /**
  * Client de LECTURE de l'API Meteora DLMM.
  *
@@ -57,13 +60,19 @@ export class MeteoraClient {
         headers: { accept: "application/json" },
       });
       if (!res.ok) {
-        throw new Error(`HTTP ${res.status} ${res.statusText}`);
+        const msg = `HTTP ${res.status} ${res.statusText}`;
+        const transient = res.status === 429 || res.status >= 500;
+        throw transient ? new Error(msg) : new NonRetryableError(msg);
       }
       return (await res.json()) as T;
     } catch (err) {
       const isTimeout = err instanceof Error && err.name === "AbortError";
       const msg = isTimeout ? "timeout (10 s)" : (err instanceof Error ? err.message : String(err));
 
+      if (err instanceof NonRetryableError) {
+        log.error("Meteora API — erreur non transitoire", { url, reason: msg });
+        throw new Error(`Meteora API ${url} -> ${msg}`);
+      }
       if (attempt < maxAttempts - 1) {
         const delayMs = 1_000 * (attempt + 1);
         log.warn("Meteora API — nouvelle tentative", { url, attempt: attempt + 1, reason: msg, delayMs });
@@ -94,7 +103,8 @@ export class MeteoraClient {
       fees24h: toNum(p.fees?.["24h"]),
       feeTvl24h: toNum(p.fee_tvl_ratio?.["24h"]),
       feeTvl1h: toNum(p.fee_tvl_ratio?.["1h"]),
-      isVerified: Boolean(p.token_x.is_verified) || Boolean(p.token_y?.is_verified),
+      // Les deux tokens : sinon tout memecoin apparié à SOL/USDC (vérifiés) passerait.
+      isVerified: Boolean(p.token_x.is_verified) && Boolean(p.token_y?.is_verified),
       isBlacklisted: Boolean(p.is_blacklisted),
     };
   }

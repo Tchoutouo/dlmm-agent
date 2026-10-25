@@ -124,4 +124,12 @@ describe("deepAnalyze", () => {
     const low = deepAnalyze(opportunity(pool, 0.1), candles);
     expect(high.riskAdjustedNetApr).toBeGreaterThan(low.riskAdjustedNetApr);
   });
+
+  it("ne plante pas quand la vol journalière dépasse 100 % (memecoin)", () => {
+    const pool = mockPool({ currentPrice: 0.0001 });
+    const candles = makeCandles([100, 101, 99, 102, 98, 101, 100, 103, 97, 100]);
+    const a = deepAnalyze(opportunity(pool, 0.4), candles, { forwardDailyVol: 1.5 });
+    expect(Number.isFinite(a.ilAt1Sigma)).toBe(true);
+    expect(a.ilAt1Sigma).toBeLessThanOrEqual(0);
+  });
 });

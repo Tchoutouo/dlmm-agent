@@ -30,7 +30,7 @@ const POOL_STUB = {
   address: "pool1",
   name: "SOL-USDC",
   token_x: { address: "mintX", is_verified: true },
-  token_y: { address: "mintY", is_verified: false },
+  token_y: { address: "mintY", is_verified: true },
   pool_config: { bin_step: 25, base_fee_pct: 0.25 },
   tvl: "100000",
   current_price: "150",
@@ -50,6 +50,14 @@ describe("MeteoraClient — cas nominaux", () => {
     expect(pools[0]!.address).toBe("pool1");
     expect(pools[0]!.currentPrice).toBe(150);
     expect(pools[0]!.isVerified).toBe(true);
+  });
+
+  it("isVerified exige les deux tokens vérifiés (memecoin non vérifié face à SOL)", async () => {
+    const meme = { ...POOL_STUB, token_x: { address: "memeMint", is_verified: false } };
+    mockFetch([okJson(meme)]);
+    const client = new MeteoraClient("https://fake.api");
+    const pool = await client.getPair("pool1");
+    expect(pool.isVerified).toBe(false);
   });
 
   it("getPair() retourne une pool normalisée", async () => {
@@ -76,6 +84,12 @@ describe("MeteoraClient — gestion des erreurs et retry", () => {
     mockFetch([errResponse(500), errResponse(500), errResponse(500)]);
     const client = new MeteoraClient("https://fake.api");
     await expect(client.getAllPairs()).rejects.toThrow("Meteora API");
+  });
+
+  it("ne réessaie pas une erreur 4xx (hors 429)", async () => {
+    mockFetch([errResponse(404)]); // un 2e appel ferait échouer le mock
+    const client = new MeteoraClient("https://fake.api");
+    await expect(client.getPair("pool1")).rejects.toThrow("HTTP 404");
   });
 
   it("retry sur erreur réseau (TypeError fetch failed)", async () => {

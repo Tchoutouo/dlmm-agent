@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { DataApiClient } from "./dataApiClient.js";
+import { DataApiClient, MAX_OHLCV_RANGE_SECONDS } from "./dataApiClient.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -59,6 +59,40 @@ describe("DataApiClient — cas nominaux", () => {
   });
 });
 
+describe("DataApiClient — fenêtre max de l'API (4 jours)", () => {
+  it("découpe 168 bougies 1h (7 jours) en 2 requêtes ≤ 4 jours et fusionne sans doublon", async () => {
+    const urls: string[] = [];
+    const responses = [okOhlcv([CANDLES[0]!, CANDLES[1]!]), okOhlcv([CANDLES[1]!, CANDLES[2]!])];
+    vi.stubGlobal("fetch", async (url: string) => {
+      urls.push(url);
+      return responses[urls.length - 1]!;
+    });
+    const client = new DataApiClient("https://fake.api");
+    const candles = await client.getOhlcv("pool1", "1h", 168);
+
+    expect(urls).toHaveLength(2);
+    for (const u of urls) {
+      const q = new URL(u).searchParams;
+      const span = Number(q.get("end_time")) - Number(q.get("start_time"));
+      expect(span).toBeLessThanOrEqual(MAX_OHLCV_RANGE_SECONDS);
+    }
+    // Tranches contiguës : la 2e commence où finit la 1re
+    expect(new URL(urls[1]!).searchParams.get("start_time")).toBe(new URL(urls[0]!).searchParams.get("end_time"));
+    expect(candles.map((c) => c.timestamp)).toEqual(CANDLES.map((c) => c.timestamp));
+  });
+
+  it("une seule requête quand la période tient dans 4 jours", async () => {
+    let calls = 0;
+    vi.stubGlobal("fetch", async () => {
+      calls++;
+      return okOhlcv(CANDLES);
+    });
+    const client = new DataApiClient("https://fake.api");
+    await client.getOhlcv("pool1", "1h", 96);
+    expect(calls).toBe(1);
+  });
+});
+
 describe("DataApiClient — gestion des erreurs et retry", () => {
   it("retry sur HTTP 429 et réussit à la 2e tentative", async () => {
     mockFetch([
@@ -78,6 +112,12 @@ describe("DataApiClient — gestion des erreurs et retry", () => {
     ]);
     const client = new DataApiClient("https://fake.api");
     await expect(client.getOhlcv("pool1")).rejects.toThrow("Data API OHLCV");
+  });
+
+  it("ne réessaie pas une erreur 400 (requête invalide)", async () => {
+    mockFetch([new Response("", { status: 400 })]); // un 2e appel ferait échouer le mock
+    const client = new DataApiClient("https://fake.api");
+    await expect(client.getOhlcv("pool1")).rejects.toThrow("HTTP 400");
   });
 
   it("retry sur TypeError réseau", async () => {

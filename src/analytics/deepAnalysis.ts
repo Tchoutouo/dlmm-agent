@@ -71,9 +71,11 @@ export function deepAnalyze(
     currentPrice: price * (1 + sizingDailyVol),
     ...suggestedRange,
   }).ilPct;
+  // Borné à −99 % : au-delà de 100 % de vol journalière (memecoins), 1 − σ
+  // rendrait le prix négatif et ferait échouer l'analyse au lieu d'un VETO motivé.
   const il1Down = concentratedIl({
     entryPrice: price,
-    currentPrice: price * (1 - sizingDailyVol),
+    currentPrice: price * Math.max(1 - sizingDailyVol, 0.01),
     ...suggestedRange,
   }).ilPct;
   const ilAt1Sigma = (il1Up + il1Down) / 2;
