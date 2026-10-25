@@ -48,8 +48,8 @@ npm test             # 207 tests (src/ et test/), hors-ligne
 npm run typecheck
 ```
 
-`npm run setup` fait tout d'un coup (dossier `data/`, `.env`, dépendances racine,
-dashboard et ML). Avec npm 11, les scripts d'installation natifs peuvent demander
+`npm run setup` fait tout d'un coup (dossier `data/`, `.env` protégé en droits
+600, dépendances racine, dashboard et ML). Avec npm 11, les scripts d'installation natifs peuvent demander
 une approbation (`npm approve-scripts`) ; les tests vérifient que SQLite fonctionne.
 
 ## Commandes
@@ -115,7 +115,8 @@ l'analyse : le scénario de baisse est borné et l'Agent 2 rend un VETO motivé.
 - L'IL en liquidité concentrée est **réel et amplifié** ; pour une pool TOKEN/SOL,
   le prix de SOL pèse autant que les fees.
 - Utilise un wallet **dédié** avec un capital limité, jamais ton wallet principal,
-  et ne committe jamais le `.env`.
+  et ne committe jamais le `.env`. Il doit être lisible par toi seul
+  (`chmod 600 .env`) : sinon l'agent refuse d'y charger la clé pour du capital réel.
 - L'humain peut rester dans la boucle (mode supervisé + dashboard).
 
 Aucune métrique ici n'est une garantie de rendement. C'est un outil d'aide à la
@@ -198,7 +199,17 @@ superviseur.
 La « mémoire stratégique » s'incarne dans les agrégats par régime/pool, qui
 s'affinent à mesure que les issues s'accumulent. Pour alimenter l'apprentissage,
 l'orchestrateur enregistre désormais des **features structurées** sur chaque
-décision (régime, volatilité, bin step, couverture, APR net prédit, taille).
+décision (régime, volatilité, bin step, forme, APR net prédit, taille).
+
+Le journal reste **fidèle à ce qui s'est réellement passé** :
+
+- `ENTER` = position réellement ouverte (paper ou live) ; une entrée simulée est
+  enregistrée `DRY_RUN`, une exécution ratée `FAILED` — ni l'une ni l'autre ne
+  compte dans les performances ;
+- `hedged` = couverture **exécutée** (aucune ne l'est aujourd'hui) ; la couverture
+  recommandée par le risque est gardée à part (`hedgeRecommended`) ;
+- le PnL réalisé est calculé de la même façon quel que soit le motif de clôture
+  (échéance, TP/SL, rééquilibrage, demande manuelle), fees déjà réclamées comprises.
 
 Lancer : `npm run learn` (lit le journal et affiche le rapport).
 
@@ -313,7 +324,11 @@ dashboard peut approuver des trades et demander des clôtures, donc
   authentification HTTP Basic sur tout le site — **obligatoire pour l'exposer**,
   par exemple sur un VPS derrière un reverse proxy qui transmet l'en-tête `Host` ;
 - toute requête qui modifie (`POST /api/…`) doit venir de la même origine et être
-  du JSON : un site tiers ne peut pas approuver un trade à ta place (CSRF).
+  du JSON : un site tiers ne peut pas approuver un trade à ta place (CSRF) ;
+- une demande de clôture n'est acceptée que pour une position réelle **ouverte et
+  suivie par l'agent** (adresses base58 validées, une demande en cours par position,
+  20 en attente au plus) ; une position ouverte à la main dans le même wallet n'est
+  jamais touchée.
 
 Une approbation porte sur un prix et un portefeuille datés : elle **expire** après
 `APPROVAL_TTL_MIN` (120 min) et, avant toute ouverture, l'agent la **revalide**
@@ -352,7 +367,19 @@ quel. Avant tout envoi :
   cotée en SOL, pas en dollars) ;
 - le prix on-chain du bin actif doit rester à moins de 3 % du prix analysé ;
 - la valeur totale du dépôt construit ne dépasse jamais 110 % de la taille approuvée ;
-- les soldes sont vérifiés, SOL natif compris (réserve pour la rent et les frais).
+- les soldes sont vérifiés, SOL natif compris (réserve pour la rent et les frais) ;
+- chaque transaction porte des **frais de priorité** (`PRIORITY_FEE_MICROLAMPORTS`),
+  pour qu'un stop-loss passe même quand le réseau est chargé.
+
+Une clôture qui nécessite plusieurs transactions et s'interrompt en route est
+signalée comme **partielle** ; le tick suivant relit la position on-chain et la
+termine.
+
+**Valider l'exécution sans rien envoyer** : avec `NETWORK=mainnet-beta`, un RPC
+mainnet et `DRY_RUN=true`, l'ouverture lit la chaîne, construit la transaction
+complète et la **simule** (prix, bins, montants, soldes) — rien n'est envoyé. Sur
+devnet, les pools de l'API (mainnet) n'existent pas : le dry-run reste hors chaîne
+et le signale.
 
 L'exécution manuelle se lance à l'unité ; le démon (`npm run daemon`) et
 `npm run scan` exécutent aussi automatiquement dès que `DRY_RUN=false` :
@@ -364,9 +391,9 @@ npm run execute -- close <adresse_pool> <position_pubkey>
 
 > ⚠️ **Ne pointe pas l'Agent 3 vers du capital réel** tant que le backtest et le
 > paper trading n'ont pas confirmé un avantage. Commence sur **devnet** avec un
-> wallet **dédié** (jamais ton principal) et de petits montants. En `DRY_RUN`,
-> l'ouverture n'interroge pas la chaîne : seul un essai devnet valide la
-> construction réelle des transactions. Ce dépôt est un outil d'aide à la
+> wallet **dédié** (jamais ton principal) et de petits montants. Le dry-run
+> mainnet simule la transaction, mais seule une exécution réelle valide son
+> comportement on-chain de bout en bout. Ce dépôt est un outil d'aide à la
 > décision, pas un conseil financier ni une garantie de rendement.
 
 ### Cycle de vie des positions on-chain
@@ -385,6 +412,14 @@ LIVE, la position est enregistrée ; ensuite, à chaque tick :
 
 Un prix USD manquant ne valorise jamais un token à 0 : le marquage est reporté
 (dernière valeur conservée), ce qui évite un faux stop-loss sur donnée absente.
+Les fees déjà réclamées (claim) restent comptées dans le rendement de la position,
+donc dans les seuils de take-profit et de stop-loss.
+
+Le **démon** (`npm run daemon`) n'exécute qu'un job on-chain à la fois (marquage,
+scan, clôtures demandées) : un job qui arrive pendant qu'un autre tourne est
+ignoré et repasse au tick suivant. Au redémarrage, une demande de clôture
+interrompue est reprise — sans risque de double clôture, la position étant relue
+on-chain.
 
 ```bash
 npm run live           # un tick (mark + clôture des échues)

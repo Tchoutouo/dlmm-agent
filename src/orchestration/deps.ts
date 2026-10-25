@@ -82,6 +82,7 @@ export async function dryRunExecute(
   const note =
     `DRY_RUN : ouverture simulée de $${risk.recommendedSizeUsd.toFixed(0)} ` +
     `dans ${candidate.pool.name} ` +
-    `range [${analysis.suggestedRange.priceLow.toFixed(4)}, ${analysis.suggestedRange.priceHigh.toFixed(4)}]`;
+    `range [${(proposal.plan?.rangeLow ?? analysis.suggestedRange.priceLow).toFixed(4)}, ` +
+    `${(proposal.plan?.rangeHigh ?? analysis.suggestedRange.priceHigh).toFixed(4)}]`;
   return { ok: true, note, mode: "DRY_RUN" };
 }
