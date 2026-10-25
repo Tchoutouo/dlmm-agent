@@ -1,8 +1,8 @@
 /**
  * Types partagés du système DLMM Agent.
  *
- * `MeteoraPair` reflète fidèlement la réponse de l'endpoint
- * GET https://dlmm-api.meteora.ag/pair/all
+ * `MeteoraPair` reflète la réponse de l'endpoint
+ * GET https://dlmm.datapi.meteora.ag/pools
  * (les nombres arrivent parfois en string dans l'API — on normalise au parsing).
  */
 

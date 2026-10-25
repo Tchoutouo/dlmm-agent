@@ -18,7 +18,7 @@ async function main() {
   const address = process.argv[2];
   if (!address) {
     console.log("Usage : npm run backtest -- <adresse_pool>");
-    console.log("Trouve une adresse via https://dlmm-api.meteora.ag/pair/all");
+    console.log("Adresses : voir les pools retenues par npm run scan, ou https://app.meteora.ag/dlmm");
     return;
   }
 

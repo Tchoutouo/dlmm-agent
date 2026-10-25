@@ -1,121 +1,133 @@
-# DLMM Agent — Socle Phase 1
+# DLMM Agent
 
-Agent IA autonome de gestion de liquidité **DLMM** (Meteora / Solana).
-Ce dépôt contient la **Phase 1 : Fondations** — collecte de données, analyse de marché
-et journal de trading intelligent. Lecture seule, aucune transaction réelle.
+Agent IA de gestion de liquidité **DLMM** (Meteora / Solana) : il repère les pools
+intéressantes, évalue le risque, simule ou exécute les positions, et apprend de
+ses résultats. Plusieurs agents spécialisés sont orchestrés par LangGraph, avec un
+dashboard de supervision Next.js et une couche ML Python optionnelle.
 
-## Ce qui est implémenté
+> **Statut** — fonctionnel en **devnet / dry-run / paper trading**. L'exécution
+> réelle existe (Agent 3) mais reste derrière plusieurs garde-fous et n'a pas
+> encore été validée sur la durée. Rien ne bouge sans action délibérée
+> (voir [Sécurité](#sécurité--responsabilité)).
 
-Agent 1 fonctionne en **deux étages** : un filtre rapide sur toutes les pools, puis
-une analyse approfondie ajustée du risque sur les meilleures candidates seulement
-(respecte les rate limits de l'API de données).
+## Vue d'ensemble
 
-| Module | Rôle | Étage |
-|---|---|---|
-| `src/data/meteoraClient.ts` | Lecture API pair/all, normalisation | 1 |
-| `src/analytics/opportunityScanner.ts` | Filtrage + scoring WSM + explications | 1 |
-| `src/data/dataApiClient.ts` | OHLCV via `dlmm.datapi.meteora.ag` | 2 |
-| `src/data/priceOracle.ts` | Prix USD via Jupiter Price API V3 (+ stables) | risque |
-| `src/analytics/quoteRisk.ts` | Profil du quote + shock de stress USD (TOKEN/SOL) | risque |
-| `src/analytics/volatility.ts` | Vol. réalisée (close-to-close + Parkinson), anomalies de volume | 2 |
-| `src/analytics/dlmmFees.ts` | Frais de base (formule officielle) + régime de fees | 2 |
-| `src/analytics/impermanentLoss.ts` | IL concentré (CLMM borné) + suggestion de range | 2 |
-| `src/analytics/deepAnalysis.ts` | Combine tout → APR ajusté du risque + rationale | 2 |
-| `src/analytics/feeApr.ts` | Fee APR proxy, rotation, APR net d'IL | 1/2 |
-| `src/risk/positionSizing.ts` | Plafonds de dimensionnement (min de tous) | risque |
-| `src/risk/hedging.ts` | Exposition directionnelle + hedge ratio | risque |
-| `src/risk/riskAgent.ts` | Verdict auditable : HALT/VETO/APPROVE(_REDUCED) | risque |
-| `src/portfolio/portfolio.ts` | Suivi NAV, positions, drawdown (SQLite) | risque |
-| `src/orchestration/graph.ts` | Graphe LangGraph : nœuds + boucle + human-in-the-loop | orchestration |
-| `src/orchestration/deps.ts` | Interface de dépendances injectées + exécution dry-run | orchestration |
-| `src/orchestration/productionDeps.ts` | Câblage des clients réels | orchestration |
-| `src/learning/performance.ts` | Métriques de perf + calibration prédit/réalisé | Agent 5 |
-| `src/learning/recurringErrors.ts` | Détection d'erreurs récurrentes par feature | Agent 5 |
-| `src/learning/suggestions.ts` | Suggestions d'amélioration concrètes | Agent 5 |
-| `src/learning/learningAgent.ts` | Rapport d'apprentissage complet (+ rendu texte) | Agent 5 |
-| `src/backtest/positionSimulator.ts` | Simule fees + variation de valeur + sortie de range | backtest |
-| `src/backtest/backtester.ts` | Walk-forward mono-pool : rejoue Agent 1+2 | backtest |
-| `src/backtest/multiBacktester.ts` | Walk-forward multi-pools, capital partagé, allocation | backtest |
-| `src/paper/paperPnl.ts` | Marquage au marché + accrual de fees (pur) | paper |
-| `src/paper/paperBroker.ts` | Positions simulées persistées, marquage, clôture | paper |
-| `src/paper/paperDeps.ts` | Deps orchestrateur en mode paper + tick | paper |
-| `src/execution/safetyGate.ts` | Garde-fou : REFUSE / DRY_RUN / LIVE (pur) | Agent 3 |
-| `src/execution/wallet.ts` | Chargement wallet base58 + connexion RPC | Agent 3 |
-| `src/execution/strategyMap.ts` | Régime → stratégie DLMM (Spot/Curve/BidAsk) | Agent 3 |
-| `src/execution/realExecutor.ts` | Ouverture/fermeture de position via le SDK | Agent 3 |
-| `src/execution/positionValue.ts` | Valorisation USD on-chain (pur) | Agent 3 |
-| `src/execution/livePositionManager.ts` | Suivi/mark/clôture des positions réelles | Agent 3 |
-| `src/execution/walletBalance.ts` | Lecture des soldes wallet réels → USD | Agent 3 |
-| `src/whale/swapValue.ts` | Magnitude USD d'un swap (pur) | whale |
-| `src/whale/whaleTracker.ts` | Détection on-chain des gros swaps (RPC) | whale |
-| `src/ml/volatilityClient.ts` | Client du service ML (repli gracieux) | ML |
-| `ml/` (Python) | Microservice FastAPI + cache de modèles (TTL) | ML |
-| `src/journal/journal.ts` | Journal SQLite : décisions + features + post-mortem | — |
+```
+Scanner (Agent 1, étage 1) → Analyse (Agent 1, étage 2) → Risque (Agent 2, veto)
+      → Superviseur humain (optionnel) → Exécution (paper / dry-run / réelle)
+      → Journal SQLite → Apprentissage (Agent 5) → Dashboard
+```
 
-Le **scoring étage 1** combine trois critères normalisés (min-max) : rendement
-(fees/TVL), soutenabilité (volume/liquidité), profondeur (liquidité en log).
-
-L'**analyse étage 2** s'appuie sur la mécanique réelle du DLMM : les frais sont
-`f_s = f_b + f_v`, où le frais variable `f_v` croît avec la volatilité. La volatilité
-est donc à double tranchant (plus de fees, mais plus d'IL et de sorties de range).
-L'agent classe par **APR net d'IL**, pas par fee brut.
-
-### Deux API officielles, complémentaires
-
-- `dlmm-api.meteora.ag/pair/all` — liste des pools + métriques de fees (`fee_tvl_ratio`).
-- `dlmm.datapi.meteora.ag/pools/{addr}/ohlcv` — historique OHLCV pour la volatilité (30 RPS).
-
-### Sur le suivi des whales
-
-Le proxy actuel (`detectVolumeAnomalies`) repère les pics de volume anormaux à partir
-de l'OHLCV — honnête et suffisant pour signaler une activité importante. Le vrai
-whale-tracking par wallet exige le parsing on-chain (RPC `getSignaturesForAddress` +
-décodage des swaps) ou un indexeur tiers ; il est planifié comme enrichissement de
-l'agent d'exécution en Phase 2.
+| Module | Rôle |
+|---|---|
+| `src/data/meteoraClient.ts` | Liste des pools (`dlmm.datapi.meteora.ag/pools`), normalisation, token de base, mode de fees |
+| `src/data/dataApiClient.ts` | OHLCV (découpage automatique en tranches ≤ 4 jours, limite de l'API) |
+| `src/data/priceOracle.ts` | Prix USD via Jupiter Price API V3 (stables = 1) |
+| `src/analytics/opportunityScanner.ts` | Filtres de sélection + scoring WSM + explications |
+| `src/analytics/deepAnalysis.ts` | Volatilité, IL concentré, régime de fees → APR net ajusté du risque |
+| `src/analytics/feeApr.ts` | APR de fees, rotation du capital, fees par volume (backtest) |
+| `src/analytics/bidAsk.ts` · `positionPlan.ts` | Position bid-ask d'un seul côté (modèle par bins) · choix spot / bid-ask |
+| `src/risk/riskAgent.ts` | Verdict auditable : HALT / VETO / APPROVE(_REDUCED) |
+| `src/risk/positionSizing.ts` · `hedging.ts` · `dailyLoss.ts` | Plafonds de taille · couverture · perte journalière |
+| `src/orchestration/graph.ts` | Graphe LangGraph (boucle, human-in-the-loop) |
+| `src/paper/*` | Broker papier, file d'approbations, ticks autonome / supervisé |
+| `src/execution/*` | Exécution réelle via le SDK `@meteora-ag/dlmm`, garde-fous, suivi on-chain |
+| `src/backtest/*` | Simulateur de position, backtests mono / multi-pools, historique USD du quote |
+| `src/learning/*` | Agent 5 : performances, profit factor, calibration, erreurs récurrentes |
+| `src/whale/*` | Détection on-chain des gros swaps |
+| `src/journal/journal.ts` · `src/portfolio/portfolio.ts` | Journal des décisions · portefeuille du scan (SQLite) |
+| `dashboard/` | Dashboard Next.js (même base SQLite) |
+| `ml/` | Microservice FastAPI de prédiction de volatilité (optionnel) |
 
 ## Installation
 
 ```bash
-npm install          # nécessite un toolchain C (better-sqlite3 se compile)
-cp .env.example .env # config sécurisée par défaut (devnet + dry-run)
+npm install          # Node ≥ 20 ; better-sqlite3 se compile (toolchain C requis)
+cp .env.example .env # configuration sûre par défaut : devnet + DRY_RUN=true
+npm test             # 207 tests (src/ et test/), hors-ligne
+npm run typecheck
 ```
 
-## Utilisation
+`npm run setup` fait tout d'un coup (dossier `data/`, `.env`, dépendances racine,
+dashboard et ML). Avec npm 11, les scripts d'installation natifs peuvent demander
+une approbation (`npm approve-scripts`) ; les tests vérifient que SQLite fonctionne.
 
-```bash
-npm run scan         # scanne le marché, classe les opportunités, journalise
-npm run learn        # analyse le journal : perfs, erreurs récurrentes, suggestions
-npm run backtest -- <adresse_pool>   # rejoue l'historique et valide la stratégie
-npm run backtest:multi -- <addr1> <addr2> ...  # multi-pools, capital partagé
-npm run paper        # paper trading sur prix réels (un tick) ; --loop pour boucler
-npm test             # vérifie la justesse des maths (IL, scoring)
-npm run typecheck    # vérification stricte des types
-```
+## Commandes
 
-> Note : `npm run scan` interroge l'API Meteora en direct — nécessite donc un
-> accès réseau à `dlmm-api.meteora.ag`. Les tests, eux, sont hors-ligne.
+| Commande | Effet | Réseau |
+|---|---|---|
+| `npm run scan` | Un cycle complet scan → analyse → risque → exécution (dry-run) | lecture |
+| `npm run paper` | Un tick de paper trading sur prix réels (`--loop` : toutes les heures, `--supervised` : via le dashboard) | lecture |
+| `npm run learn` | Rapport de l'Agent 5 sur le journal | aucun |
+| `npm run status` | État du système dans le terminal | aucun |
+| `npm run backtest -- <pool>` | Backtest walk-forward d'une pool (~30 jours) | lecture |
+| `npm run backtest:multi -- <p1> <p2> …` | Backtest multi-pools, capital partagé | lecture |
+| `npm run backtest:sltp [-- <pools>]` | Compare 7 couples stop-loss / take-profit | lecture |
+| `npm run backtest:strategy [-- <pools>]` | Compare spot, bid-ask et bid-ask après une chute | lecture |
+| `npm run whales -- <pool>` | Gros swaps récents d'une pool | lecture RPC |
+| `npm run check` | Soldes du wallet configuré | lecture RPC |
+| `npm run devnet:wallet` · `devnet:check` · `devnet:run` | Wallet de test devnet, airdrop, test bout-en-bout | devnet |
+| `npm run execute -- open <pool> <usd>` | Ouvre une position réelle (garde-fous) | écriture |
+| `npm run live` · `npm run daemon` | Suivi des positions réelles · démon autonome (mark, claim, rebalancing, scan) | écriture |
+
+`./start.sh` lance paper trading + dashboard ensemble (`--supervised`,
+`--dashboard-only`, `--agent-only`, `--status`).
+
+## Sélection des pools (Agent 1)
+
+L'Agent 1 travaille en **deux étages** : un filtre rapide sur ~1 000 pools, puis
+une analyse approfondie (OHLCV, volatilité, IL) des meilleures candidates.
+
+**Filtres** (réglables dans `.env`, `0` = désactivé) — issus des règles des
+traders DLMM et vérifiés sur les données réelles (255 → ~45 pools éligibles) :
+
+| Réglage | Défaut | Règle |
+|---|---|---|
+| — | — | pool non blacklistée, liquidité ≥ 10 k$, volume 24h ≥ 5 k$ |
+| — | — | **les deux tokens vérifiés** (sinon tout memecoin face à SOL/USDC passerait) |
+| `MIN_VOLUME_TVL_RATIO` | `1` | volume 24h ≥ TVL, sinon la liquidité génère trop peu de fees |
+| `MIN_MARKET_CAP_USD` | `1000000` | market cap du token de base ≥ 1 M$ |
+| `MIN_RECENT_VOLUME_RATIO` | `0.5` | volume des 4 dernières heures (×6) ≥ 50 % du volume 24h : écarte les pools qui s'éteignent |
+| `EXCLUDE_TOKEN_COPIES` | `true` | même symbole qu'un token à plus grosse market cap → copie écartée |
+| — | — | **une seule pool par token**, la plus profonde |
+
+**Score** : moyenne pondérée de trois critères normalisés — rendement (fees/TVL),
+soutenabilité (volume/liquidité), profondeur (liquidité en log). Les pools qui
+versent leurs fees **en SOL ou en stable** (`collect_fee_mode = OnlyY`) reçoivent un
+bonus `QUOTE_FEES_SCORE_BONUS` (0,1) : leurs fees ne perdent pas de valeur avec le
+memecoin.
+
+**Analyse** : les frais DLMM sont `f_s = f_b + f_v`, où le frais variable `f_v`
+croît avec la volatilité. La volatilité est donc à double tranchant (plus de fees,
+mais plus d'IL et de sorties de range) : l'agent classe par **APR net d'IL**, pas
+par fee brut. Les tokens à volatilité journalière > 100 % ne font pas planter
+l'analyse : le scénario de baisse est borné et l'Agent 2 rend un VETO motivé.
 
 ## Sécurité & responsabilité
 
-Ce socle est **en lecture seule**. Quand l'exécution arrivera (Phase 2) :
+- `DRY_RUN=true` et `NETWORK=devnet` par défaut : aucune transaction réelle.
+- Une transaction réelle sur mainnet exige `DRY_RUN=false`, `NETWORK=mainnet-beta`
+  **et** `ACKNOWLEDGE_REAL_FUNDS=true` — impossible par accident.
+- Ordre de validation : **backtest → paper trading → devnet → petits montants**.
+- L'IL en liquidité concentrée est **réel et amplifié** ; pour une pool TOKEN/SOL,
+  le prix de SOL pèse autant que les fees.
+- Utilise un wallet **dédié** avec un capital limité, jamais ton wallet principal,
+  et ne committe jamais le `.env`.
+- L'humain peut rester dans la boucle (mode supervisé + dashboard).
 
-- `DRY_RUN=true` reste le défaut — aucune transaction tant qu'on ne le désactive pas.
-- Commence sur **devnet**, puis **paper trading** sur mainnet avant tout capital réel.
-- L'IL en liquidité concentrée est **réel et amplifié** : un range serré démultiplie
-  les fees mais aussi le risque de sortie de range. L'agent de risque arbitre les deux.
-- Utilise un wallet **dédié** avec un capital limité, jamais ton wallet principal.
-- L'humain reste dans la boucle : l'agent superviseur valide les décisions importantes.
-
-Aucune de ces métriques n'est une garantie de rendement. C'est un outil d'aide à la
+Aucune métrique ici n'est une garantie de rendement. C'est un outil d'aide à la
 décision, pas un conseil financier.
 
-### Agent 2 — Risque (droit de veto)
+## Agent 2 — Risque (droit de veto)
 
 L'agent de risque a un **droit de veto** sur l'Agent 1. Sa logique, entièrement
 auditable (`checks` traçables) :
 
 1. **Disjoncteur drawdown** — si le drawdown ≥ `MAX_DRAWDOWN_PCT`, verdict `HALT` :
    aucune nouvelle entrée, protection du capital.
+   **Limite journalière** — si la perte depuis l'ouverture du jour UTC atteint
+   `MAX_DAILY_LOSS_PCT` (5 %), `HALT` jusqu'au lendemain : un mauvais jour
+   (série de pertes, sur-trading) suspend les entrées sans attendre −15 %.
 2. **Checks de veto** — volatilité, APR net minimal, perte de stress, liquidité,
    capital disponible. Un seul échec → `VETO`.
 3. **Dimensionnement** — taille = minimum de cinq plafonds indépendants (plafond
@@ -129,7 +141,7 @@ bas du range (pas l'IL vs HODL) — c'est la bonne mesure pour protéger le capi
 La **couverture** calcule la part directionnelle de la position et suggère un short
 notionnel ; son exécution viendra avec l'agent d'exécution.
 
-### Valorisation USD et paires TOKEN/SOL
+## Valorisation USD et paires TOKEN/SOL
 
 Le stress doit être en USD. Pour une paire TOKEN/USDC, valeur-en-quote ≈ valeur-USD.
 Mais pour une paire TOKEN/SOL, la valeur USD de **toute** la position suit le prix
@@ -145,7 +157,7 @@ Les prix USD viennent de **Jupiter Price API V3** (`src/data/priceOracle.ts`), a
 court-circuit des stablecoins (USDC/USDT = 1). La vol USD du quote est estimée par
 défaut (`QUOTE_DAILY_VOL_PCT`) ou calculée depuis une série de référence.
 
-### Orchestration (LangGraph.js)
+## Orchestration (LangGraph.js)
 
 Les agents sont assemblés en un graphe stateful (`@langchain/langgraph`) :
 
@@ -159,7 +171,7 @@ scan → [ analyze → assess → (halt | supervise → execute/skip | skip) ] (
 - `supervise` : **human-in-the-loop**. En mode `supervised`, le graphe s'interrompt
   (`interrupt`) et attend une décision `{ approved }` ; en mode `autonomous`, il
   applique la politique d'auto-approbation (le risque a déjà filtré).
-- `execute` (Agent 3, **placeholder dry-run**) : aucune transaction réelle pour l'instant.
+- `execute` : broker papier, dry-run, ou exécuteur réel (Agent 3) selon le mode et les garde-fous.
 - `advance` boucle sur la candidate suivante.
 
 Les dépendances (clients réseau, portefeuille, journal) sont **injectées**
@@ -167,11 +179,12 @@ Les dépendances (clients réseau, portefeuille, journal) sont **injectées**
 tests couvrent les chemins approve / veto / halt et l'interruption/reprise du
 superviseur.
 
-### Agent 5 — Apprentissage & Optimisation
+## Agent 5 — Apprentissage & Optimisation
 
 `analyzeJournal(entries)` (fonction pure) transforme l'historique en rapport :
 
-- **Performances** globales et tranchées par régime, pool, verdict (win rate, PnL, fees).
+- **Performances** globales et tranchées par régime, pool, verdict (win rate, PnL,
+  fees, **profit factor** = gains bruts / pertes brutes).
 - **Calibration** : corrélation entre l'APR net *prédit* et le rendement *réalisé*
   annualisé — une faible corrélation signale un modèle à recalibrer.
 - **Erreurs récurrentes** : groupes de positions qui perdent systématiquement
@@ -186,7 +199,7 @@ décision (régime, volatilité, bin step, couverture, APR net prédit, taille).
 
 Lancer : `npm run learn` (lit le journal et affiche le rapport).
 
-### Validation par backtest (avant tout capital)
+## Validation par backtest (avant tout capital)
 
 `runBacktest(pool, candles)` rejoue l'historique en **walk-forward** : à chaque
 pas il ré-exécute toute la chaîne (Agent 1 + Agent 2) sur l'état passé, et si
@@ -195,9 +208,21 @@ l'entrée est approuvée, `simulatePosition` calcule l'issue sur la fenêtre sui
 trades, ce qui teste aussi le disjoncteur de drawdown. Les sorties sont des
 `JournalEntry` que l'Agent 5 analyse directement.
 
-Le modèle de fees est **délibérément conservateur** (il sous-estime probablement
-le boost de concentration) : pour un outil dont le but est de *ne pas perdre*,
-mieux vaut un backtest prudent qu'optimiste.
+Le modèle est **délibérément prudent**, et corrigé de deux biais majeurs :
+
+- **Fees issues du volume réel de chaque bougie** : `volume × (fees/volume) / TVL ×
+  taille`, et l'APR attendu à chaque pas vient du volume des 24 bougies
+  *précédentes*. L'ancien modèle étalait l'activité d'aujourd'hui sur tout le
+  passé ; comme le scanner retient les pools très actives aujourd'hui, il
+  surestimait les fees d'environ 5×. Restent fixes : le taux de fees et la TVL
+  actuels (pas d'historique dans l'API), et le boost de concentration (ignoré).
+- **Valorisation en USD** : pour une pool TOKEN/SOL, la valeur est convertie avec
+  l'historique du prix de SOL (pool SOL/stable la plus profonde) ; les stops
+  réagissent donc aussi à une baisse de SOL.
+
+Les positions peuvent sortir avant la fin de leur fenêtre (`stopLossPct`,
+`takeProfitPct`, évalués à chaque clôture) ; le capital est alors réengagé dès la
+bougie suivante.
 
 > Un backtest favorable **ne garantit pas** un profit réel : surapprentissage,
 > slippage, MEV, changement de régime et approximations du modèle de fees s'y
@@ -214,9 +239,26 @@ capital vu par les suivantes, donc les plafonds d'exposition et de concentration
 de l'Agent 2 s'appliquent **réellement entre pools**. C'est ce qui valide
 l'allocation, pas seulement le timing d'une pool isolée.
 
-Lancer : `npm run backtest:multi -- <addr1> <addr2> ...`
+Lancer : `npm run backtest:multi -- <addr1> <addr2> ...` (fees par volume ; la
+valorisation USD du quote n'y est pas encore branchée).
 
-### Paper trading (dernier filtre avant tout capital)
+### Comparer des variantes sur les mêmes décisions
+
+- `npm run backtest:sltp` compare 7 couples stop-loss / take-profit (dont le
+  −4 %/+5 % des traders manuels).
+- `npm run backtest:strategy` compare la position **spot** (deux côtés, centrée),
+  la **bid-ask d'un seul côté** en SOL/stable, et la bid-ask ouverte **seulement
+  après une chute** (5–20 % en 6–24 h).
+
+Résultats observés (8 pools, 30 jours, octobre 2026, SOL −17 %) : aucun couple
+SL/TP ne bat nettement la détention (le défaut −8 %/+15 % ≈ détention, −4 %/+5 %
+fait moins bien en multipliant les trades) ; la bid-ask gagne beaucoup moins de
+fees que le spot et reste perdante, même en attendant une chute (profit factor
+< 1, peu de trades). D'où les défauts actuels : sorties −8 %/+15 %, positions spot.
+Ces chiffres dépendent de la période : relancer les comparaisons avant de changer
+un réglage.
+
+## Paper trading (dernier filtre avant tout capital)
 
 `npm run paper` exécute un **tick** sur les prix réels (mainnet), sans aucune
 transaction. Chaque tick :
@@ -232,13 +274,22 @@ transaction. Chaque tick :
 `--loop` répète le tick toutes les heures. C'est le pont vers l'Agent 3 : ce
 dernier remplacera simplement l'exécuteur papier par le SDK réel — même interface.
 
+- **Valorisation USD** : le prix USD du quote est mémorisé à l'ouverture, et la
+  valeur de la position suit sa variation (une baisse de SOL se voit dans le PnL).
+- **Forme des positions** : `PAPER_STRATEGY=spot` (défaut) ou `sol_bidask`
+  (un seul côté en SOL/stable, bins sous le prix, plus chargés en profondeur,
+  ≤ 69 bins). Repli automatique sur `spot` si le quote n'est ni SOL ni stable.
+
 ## Dashboard de supervision (Next.js)
 
 Un dashboard web (`dashboard/`, App Router) lit le **même fichier SQLite** que les
 agents et offre la visibilité et le contrôle :
 
-- portefeuille papier en direct (NAV, cash, PnL cumulé, drawdown, win rate) ;
-- courbe de PnL, positions ouvertes, journal des décisions ;
+- portefeuille en direct (NAV, cash, PnL cumulé, drawdown, win rate, profit factor),
+  lu dans **une seule source** : positions réelles si le mode live existe, sinon
+  paper trading, sinon portefeuille du scan ;
+- courbe de PnL, **PnL par jour** (14 derniers jours UTC), positions ouvertes,
+  journal des décisions ;
 - panneau **Agent 5** (performance par régime, calibration, erreurs récurrentes, suggestions) ;
 - panneau **superviseur** : les propositions en attente (mode `--supervised`) se
   valident ou se rejettent en un clic ; l'agent ouvre les positions approuvées au
@@ -352,9 +403,15 @@ réel (cash on-chain + positions), utilisé par `npm run live`.
 - **Phase 4 ✅** — Agent 3 : exécution réelle DLMM (devnet, garde-fous) + cycle de vie on-chain
 - **Phase 5 ✅** — couche ML Python (microservice FastAPI auto-validant, cache + ré-entraînement)
 - **Phase 6 ✅** — whale-tracking on-chain · lecture des soldes wallet réels
-- **Prochaine étape utilisateur** — tests bout-en-bout sur **devnet** (wallet dédié, petits montants) (pilote les interruptions)
+- **Phase 7 ✅** — règles des traders DLMM : filtres de sélection, limite de perte
+  journalière, bonus fees en quote, exclusion des copies · backtest réaliste (fees
+  par volume, valorisation USD) et comparaisons SL/TP et spot / bid-ask
+- **Prochaines étapes** — paper trading sur la durée · tests bout-en-bout sur
+  **devnet** (wallet dédié, petits montants) · déploiement sur un **VPS** (agent en
+  démon + dashboard protégé)
 
 ## Stack
 
-TypeScript / Node 20+ · API Meteora (lecture) · SQLite (journal) · Vitest (tests).
-Le SDK `@meteora-ag/dlmm` et la couche ML Python arrivent aux phases suivantes.
+TypeScript / Node 20+ · LangGraph.js · SDK `@meteora-ag/dlmm` · `@solana/web3.js` ·
+API de données Meteora · Jupiter Price API · SQLite (`better-sqlite3`) · Vitest ·
+Next.js 15 (dashboard) · Python / FastAPI (ML, optionnel).
