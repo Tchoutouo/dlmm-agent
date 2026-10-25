@@ -11,6 +11,7 @@ import {
 } from "./paperPnl.js";
 import { config } from "../config.js";
 import { trackDailyLoss } from "../risk/dailyLoss.js";
+import type { PositionShape } from "../analytics/positionPlan.js";
 
 /**
  * Broker de paper trading : tient des positions simulées persistées, les marque
@@ -52,6 +53,15 @@ export class PaperBroker {
       );
       CREATE TABLE IF NOT EXISTS paper_meta (key TEXT PRIMARY KEY, value REAL NOT NULL);
     `);
+    // Migration : forme de position + bin step (bases créées avant la bid-ask)
+    const cols = (this.db.prepare(`PRAGMA table_info(paper_positions)`).all() as Array<{ name: string }>)
+      .map((c) => c.name);
+    if (!cols.includes("shape")) {
+      this.db.exec(`ALTER TABLE paper_positions ADD COLUMN shape TEXT NOT NULL DEFAULT 'spot'`);
+    }
+    if (!cols.includes("bin_step")) {
+      this.db.exec(`ALTER TABLE paper_positions ADD COLUMN bin_step INTEGER NOT NULL DEFAULT 0`);
+    }
     if (!this.db.prepare(`SELECT 1 FROM paper_meta WHERE key='cash'`).get()) {
       const set = this.db.prepare(`INSERT INTO paper_meta(key,value) VALUES(?,?)`);
       set.run("cash", initialCashUsd);
@@ -85,6 +95,8 @@ export class PaperBroker {
     rangeHigh: number;
     feeAprAnnual: number;
     nowSec: number;
+    shape?: PositionShape;
+    binStep?: number;
   }): number {
     const cash = this.meta("cash");
     if (p.sizeUsd > cash) throw new Error("Cash papier insuffisant");
@@ -92,13 +104,13 @@ export class PaperBroker {
       .prepare(
         `INSERT INTO paper_positions
          (journal_id,pool_address,pool_name,mint_x,mint_y,size_usd,value_usd,
-          entry_price,range_low,range_high,fee_apr,opened_at_sec,last_mark_sec)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+          entry_price,range_low,range_high,fee_apr,opened_at_sec,last_mark_sec,shape,bin_step)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       )
       .run(
         p.journalId ?? null, p.poolAddress, p.poolName, p.mintX, p.mintY,
         p.sizeUsd, p.sizeUsd, p.entryPrice, p.rangeLow, p.rangeHigh,
-        p.feeAprAnnual, p.nowSec, p.nowSec
+        p.feeAprAnnual, p.nowSec, p.nowSec, p.shape ?? "spot", p.binStep ?? 0
       );
     this.setMeta("cash", cash - p.sizeUsd);
     return Number(info.lastInsertRowid);
@@ -228,5 +240,7 @@ function rowToPosition(r: Record<string, unknown>): PaperPosition {
     everOutOfRange: Boolean(r.ever_out),
     openedAtSec: r.opened_at_sec as number,
     lastMarkAtSec: r.last_mark_sec as number,
+    shape: (r.shape as PositionShape | undefined) ?? "spot",
+    binStep: (r.bin_step as number | undefined) || undefined,
   };
 }

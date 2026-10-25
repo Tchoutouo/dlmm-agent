@@ -13,6 +13,7 @@ import { deepAnalyze } from "../analytics/deepAnalysis.js";
 import { buildQuoteProfile } from "../analytics/quoteRisk.js";
 import { assessRisk, riskParamsFromConfig } from "../risk/riskAgent.js";
 import { simulatePosition } from "./positionSimulator.js";
+import { planPosition, type PositionShape } from "../analytics/positionPlan.js";
 
 export interface BacktestOptions {
   timeframe?: Timeframe;
@@ -28,6 +29,8 @@ export interface BacktestOptions {
   takeProfitPct?: number;
   /** Sortie anticipée à −X % de PnL (0/absent = pas de stop). */
   stopLossPct?: number;
+  /** Forme des positions simulées (défaut spot). */
+  strategy?: PositionShape;
 }
 
 export interface BacktestSummary {
@@ -127,10 +130,13 @@ export function runBacktest(pool: Pool, candles: Candle[], options: BacktestOpti
 
     if (risk.verdict === "APPROVE" || risk.verdict === "APPROVE_REDUCED") {
       const forward = candles.slice(i, i + window);
+      const plan = planPosition(options.strategy ?? "spot", poolNow, analysis.suggestedRange);
       const sim = simulatePosition({
         entryPrice: now.close,
         sizeUsd: risk.recommendedSizeUsd,
-        range: analysis.suggestedRange,
+        range: { priceLow: plan.rangeLow, priceHigh: plan.rangeHigh },
+        shape: plan.shape,
+        binStep: pool.binStep,
         feeAprAnnual: opportunity.estimatedFeeApr,
         forwardCandles: forward,
         candleSeconds,
@@ -148,6 +154,8 @@ export function runBacktest(pool: Pool, candles: Candle[], options: BacktestOpti
       e.wentOutOfRange = sim.wentOutOfRange;
       e.holdingDays = sim.holdingDays;
       e.exitReason = sim.exitReason;
+      e.rangeLow = plan.rangeLow;
+      e.rangeHigh = plan.rangeHigh;
       entries.push(e);
     } else {
       skipped++;

@@ -1,4 +1,6 @@
 import { positionValueRatio } from "../analytics/impermanentLoss.js";
+import { bidAskFeeMultiplier, bidAskLayout, bidAskValueRatio } from "../analytics/bidAsk.js";
+import type { PositionShape } from "../analytics/positionPlan.js";
 
 const YEAR_SECONDS = 365 * 24 * 3600;
 
@@ -19,6 +21,10 @@ export interface PaperPosition {
   everOutOfRange: boolean;
   openedAtSec: number;
   lastMarkAtSec: number;
+  /** Forme de la position (absent = spot, positions antérieures). */
+  shape?: PositionShape;
+  /** Bin step de la pool (requis pour la forme sol_bidask). */
+  binStep?: number;
 }
 
 export interface PaperMark {
@@ -55,12 +61,20 @@ export function markPaperPosition(
 ): PaperMark {
   const elapsed = Math.max(0, nowSec - pos.lastMarkAtSec);
   const inRange = currentPrice >= pos.rangeLow && currentPrice <= pos.rangeHigh;
-  const feeAccruedNow = inRange
-    ? pos.sizeUsd * pos.feeAprAnnual * (elapsed / YEAR_SECONDS)
-    : 0;
-  const accruedFeesUsd = pos.accruedFeesUsd + feeAccruedNow;
 
-  const ratio = positionValueRatio(pos.entryPrice, currentPrice, pos.rangeLow, pos.rangeHigh);
+  // Bid-ask d'un côté : valeur par bins, fees selon la liquidité du bin actif
+  let feeMultiplier = inRange ? 1 : 0;
+  let ratio: number;
+  if (pos.shape === "sol_bidask" && pos.binStep) {
+    const layout = bidAskLayout(pos.rangeLow, pos.rangeHigh, pos.binStep);
+    feeMultiplier = bidAskFeeMultiplier(currentPrice, layout);
+    ratio = bidAskValueRatio(currentPrice, layout);
+  } else {
+    ratio = positionValueRatio(pos.entryPrice, currentPrice, pos.rangeLow, pos.rangeHigh);
+  }
+
+  const feeAccruedNow = pos.sizeUsd * pos.feeAprAnnual * (elapsed / YEAR_SECONDS) * feeMultiplier;
+  const accruedFeesUsd = pos.accruedFeesUsd + feeAccruedNow;
   const lpValueUsd = pos.sizeUsd * ratio;
 
   return {

@@ -12,6 +12,7 @@
     "backtest": "tsx src/backtest.ts",
     "backtest:multi": "tsx src/backtest-multi.ts",
     "backtest:sltp": "tsx src/backtest-sltp.ts",
+    "backtest:strategy": "tsx src/backtest-strategy.ts",
     "execute": "tsx src/execute.ts",
     "live": "tsx src/live.ts",
     "whales": "tsx src/whales.ts",

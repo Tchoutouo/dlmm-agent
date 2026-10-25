@@ -1,5 +1,7 @@
 import type { Candle } from "../types.js";
 import { positionValueRatio } from "../analytics/impermanentLoss.js";
+import { bidAskFeeMultiplier, bidAskLayout, bidAskValueRatio } from "../analytics/bidAsk.js";
+import type { PositionShape } from "../analytics/positionPlan.js";
 
 export interface SimulatedOutcome {
   exitPrice: number;
@@ -27,6 +29,10 @@ export interface SimulateInput {
   takeProfitPct?: number;
   /** Sortie dès que le PnL tombe à −X % de la taille. 0/absent = désactivé. */
   stopLossPct?: number;
+  /** Forme de la position (défaut spot). */
+  shape?: PositionShape;
+  /** Bin step de la pool (requis pour sol_bidask). */
+  binStep?: number;
 }
 
 /**
@@ -60,10 +66,17 @@ export function simulatePosition(input: SimulateInput): SimulatedOutcome {
     };
   }
 
-  // Fees gagnées par bougie passée dans le range
+  // Fees gagnées par bougie passée dans le range (pondérées par la liquidité
+  // du bin actif pour une bid-ask)
   const feePerCandleUsd = sizeUsd * feeAprAnnual * (candleSeconds / 86_400 / 365);
+  const layout =
+    input.shape === "sol_bidask" && input.binStep ? bidAskLayout(range.priceLow, range.priceHigh, input.binStep) : null;
+  const valueRatio = (p: number) =>
+    layout ? bidAskValueRatio(p, layout) : positionValueRatio(entryPrice, p, range.priceLow, range.priceHigh);
+  const feeWeight = (p: number, within: boolean) => (layout ? bidAskFeeMultiplier(p, layout) : within ? 1 : 0);
 
   let inRange = 0;
+  let feeCandles = 0; // bougies en range pondérées par la liquidité active
   let wentOutOfRange = false;
   let held = 0;
   let exitReason: SimulatedOutcome["exitReason"] = "horizon";
@@ -73,12 +86,14 @@ export function simulatePosition(input: SimulateInput): SimulatedOutcome {
   // Marquage à chaque clôture ; TP/SL évalués sur les clôtures (pas en intra-bougie)
   for (const c of forwardCandles) {
     held++;
-    if (c.close >= range.priceLow && c.close <= range.priceHigh) inRange++;
+    const within = c.close >= range.priceLow && c.close <= range.priceHigh;
+    if (within) inRange++;
     else wentOutOfRange = true;
+    feeCandles += feeWeight(c.close, within);
 
     exitPrice = c.close;
-    valueChangeUsd = sizeUsd * (positionValueRatio(entryPrice, exitPrice, range.priceLow, range.priceHigh) - 1);
-    const pnlPct = sizeUsd > 0 ? ((valueChangeUsd + inRange * feePerCandleUsd) / sizeUsd) * 100 : 0;
+    valueChangeUsd = sizeUsd * (valueRatio(exitPrice) - 1);
+    const pnlPct = sizeUsd > 0 ? ((valueChangeUsd + feeCandles * feePerCandleUsd) / sizeUsd) * 100 : 0;
 
     if (tp > 0 && pnlPct >= tp) {
       exitReason = "take_profit";
@@ -90,7 +105,7 @@ export function simulatePosition(input: SimulateInput): SimulatedOutcome {
     }
   }
 
-  const feesEarnedUsd = inRange * feePerCandleUsd;
+  const feesEarnedUsd = feeCandles * feePerCandleUsd;
 
   return {
     exitPrice,
