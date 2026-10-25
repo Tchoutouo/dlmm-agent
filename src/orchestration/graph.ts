@@ -12,7 +12,7 @@ import type {
   RiskAssessment,
   ScoredOpportunity,
 } from "../types.js";
-import { deepAnalyze } from "../analytics/deepAnalysis.js";
+import { chooseCoveredPool } from "../analytics/poolChoice.js";
 import { buildQuoteProfile } from "../analytics/quoteRisk.js";
 import { assessRisk } from "../risk/riskAgent.js";
 import type { OrchestratorDeps, DecisionRecord } from "./deps.js";
@@ -72,10 +72,15 @@ export function buildOrchestrator(deps: OrchestratorDeps) {
       const forwardDailyVol = deps.getForwardVol
         ? await deps.getForwardVol(c.pool.address, candles)
         : undefined;
-      const analysis = deepAnalyze(c, candles, { forwardDailyVol: forwardDailyVol ?? undefined });
-      const quoteUsd = await deps.getQuoteUsdPrice(c.pool.mintY);
-      const quoteProfile = buildQuoteProfile(c.pool.mintY, quoteUsd);
-      return { analysis, quoteProfile };
+      // Parmi les pools du token, celle dont le bin step couvre le mieux la volatilité
+      const choice = chooseCoveredPool(c, candles, { forwardDailyVol: forwardDailyVol ?? undefined });
+      const chosen = choice.opportunity;
+      const quoteUsd = await deps.getQuoteUsdPrice(chosen.pool.mintY);
+      const quoteProfile = buildQuoteProfile(chosen.pool.mintY, quoteUsd);
+      if (chosen.pool.address === c.pool.address) return { analysis: choice.analysis, quoteProfile };
+      // La suite (risque, exécution, journal) porte sur la pool choisie
+      const candidates = s.candidates.map((x, i) => (i === s.cursor ? chosen : x));
+      return { analysis: choice.analysis, quoteProfile, candidates };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`⚠️ Analyse ${c.pool.name} échouée : ${msg}`);

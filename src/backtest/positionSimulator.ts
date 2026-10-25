@@ -1,5 +1,5 @@
 import type { Candle } from "../types.js";
-import { positionValueRatio } from "../analytics/impermanentLoss.js";
+import { positionAmounts, positionValueRatio } from "../analytics/impermanentLoss.js";
 import { bidAskFeeMultiplier, bidAskLayout, bidAskValueRatio } from "../analytics/bidAsk.js";
 import type { PositionShape } from "../analytics/positionPlan.js";
 
@@ -8,6 +8,12 @@ export interface SimulatedOutcome {
   feesEarnedUsd: number;
   valueChangeUsd: number; // variation de la valeur LP (hors fees)
   realizedPnlUsd: number; // valueChange + fees
+  /**
+   * Variation qu'aurait eue la simple DÉTENTION des tokens déposés (USD).
+   * valueChange − hodlChange = IL face à la détention (propre au LP) ;
+   * hodlChange = mouvement du marché, que tout détenteur aurait subi.
+   */
+  hodlChangeUsd: number;
   wentOutOfRange: boolean;
   fractionInRange: number;
   holdingDays: number;
@@ -74,6 +80,7 @@ export function simulatePosition(input: SimulateInput): SimulatedOutcome {
       feesEarnedUsd: 0,
       valueChangeUsd: 0,
       realizedPnlUsd: 0,
+      hodlChangeUsd: 0,
       wentOutOfRange: false,
       fractionInRange: 0,
       holdingDays: 0,
@@ -128,11 +135,21 @@ export function simulatePosition(input: SimulateInput): SimulatedOutcome {
     }
   }
 
+  // Détention des tokens déposés : bid-ask = 100 % quote ; spot = montants à l'entrée
+  let hodlRatio = 1;
+  if (!layout) {
+    const { x, y } = positionAmounts(entryPrice, range.priceLow, range.priceHigh);
+    const atEntry = x * entryPrice + y;
+    hodlRatio = atEntry > 0 ? (x * exitPrice + y) / atEntry : 1;
+  }
+  const hodlChangeUsd = sizeUsd * (hodlRatio * quoteFactor(held - 1) - 1);
+
   return {
     exitPrice,
     feesEarnedUsd,
     valueChangeUsd,
     realizedPnlUsd: valueChangeUsd + feesEarnedUsd,
+    hodlChangeUsd,
     wentOutOfRange,
     fractionInRange: inRange / held,
     holdingDays: (held * candleSeconds) / 86_400,

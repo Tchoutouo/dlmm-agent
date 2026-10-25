@@ -86,28 +86,42 @@ export function scanOpportunities(
   // reconnaître l'original même s'il est lui-même écarté ensuite)
   const copies = opts.excludeTokenCopies ? findTokenCopies(pools) : new Set<string>();
 
-  // 1. Filtrage de sécurité (les champs absents = inconnus → filtre non appliqué)
-  const filtered = pools.filter((p) => {
+  // 1. Filtrage (les champs absents = inconnus → filtre non appliqué)
+  //    - sécurité : blacklist, copies, vérification, liquidité, volume, market cap
+  //    - activité : volume ≥ TVL, volume récent encore actif
+  const safe = (p: Pool) => {
     if (p.isBlacklisted) return false;
     if (p.baseMint && copies.has(p.baseMint)) return false;
     if (opts.verifiedOnly && !p.isVerified) return false;
     if (p.liquidityUsd < opts.minLiquidityUsd) return false;
     if (p.volume24h < opts.minVolume24h) return false;
-    if (capitalTurnover(p) < opts.minVolumeTvlRatio) return false;
     if (
       opts.minMarketCapUsd > 0 &&
       !isStablePool(p) &&
       p.baseMarketCapUsd !== undefined &&
       p.baseMarketCapUsd < opts.minMarketCapUsd
     ) return false;
+    return true;
+  };
+  const active = (p: Pool) => {
+    if (capitalTurnover(p) < opts.minVolumeTvlRatio) return false;
     if (
       p.volume4h !== undefined &&
       p.volume24h > 0 &&
       (p.volume4h * 6) / p.volume24h < opts.minRecentVolumeRatio
     ) return false;
     return true;
-  });
+  };
+  const safePools = pools.filter(safe);
+  const filtered = safePools.filter(active);
   const eligible = opts.onePoolPerToken ? keepDeepestPoolPerToken(filtered) : filtered;
+  // Alternatives par token : mêmes garanties de sécurité, sans exiger l'activité de
+  // la pool principale — une pool à plus grand bin step a souvent moins de volume,
+  // et son niveau de fees est jugé ensuite par l'APR net de l'agent de risque.
+  const alternativesOf = (p: Pool): Pool[] =>
+    opts.onePoolPerToken && p.baseMint && !isStablePool(p)
+      ? safePools.filter((q) => q.baseMint === p.baseMint && q.address !== p.address && !isStablePool(q))
+      : [];
 
   if (eligible.length === 0) return [];
 
@@ -137,7 +151,9 @@ export function scanOpportunities(
     const b = opts.quoteFeesBonus;
     const score = (1 - b) * wsm + (m.pool.feesInQuote ? b : 0);
 
+    const alternatives = alternativesOf(m.pool);
     return {
+      ...(alternatives.length > 0 ? { alternatives } : {}),
       pool: m.pool,
       score,
       components: { yieldScore, sustainabilityScore, depthScore },

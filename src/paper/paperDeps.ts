@@ -11,6 +11,7 @@ import { ApprovalQueue } from "./approvalQueue.js";
 import { predictForwardVol } from "../ml/volatilityClient.js";
 import { config } from "../config.js";
 import { planPosition } from "../analytics/positionPlan.js";
+import { chooseCoveredPool } from "../analytics/poolChoice.js";
 import { MAX_PRICE_DEVIATION } from "../execution/realExecutor.js";
 import { priceDeviation } from "../execution/executionMath.js";
 import type { DeepAnalysis, ScoredOpportunity } from "../types.js";
@@ -250,11 +251,12 @@ export async function paperTickSupervised(
   const candidates = scanOpportunities(pools, { topN: 5 });
   const snapshot = broker.snapshot();
   let queued = 0;
-  for (const cand of candidates) {
-    if (queue.hasOpenProposal(cand.pool.address)) continue; // déjà proposée, en attente
+  for (const scanned of candidates) {
     try {
-      const candles = await c.data.getOhlcv(cand.pool.address, "1h", 168);
-      const analysis = deepAnalyze(cand, candles);
+      const candles = await c.data.getOhlcv(scanned.pool.address, "1h", 168);
+      // Pool du token dont le bin step couvre le mieux la volatilité
+      const { opportunity: cand, analysis } = chooseCoveredPool(scanned, candles);
+      if (queue.hasOpenProposal(cand.pool.address)) continue; // déjà proposée, en attente
       const quoteProfile = buildQuoteProfile(cand.pool.mintY, await c.oracle.getUsdPrice(cand.pool.mintY));
       const plan = planPosition(config.PAPER_STRATEGY, cand.pool, analysis.suggestedRange);
       const risk = assessRisk(cand, analysis, snapshot, undefined, quoteProfile, plan);

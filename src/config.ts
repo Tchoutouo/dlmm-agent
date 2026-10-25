@@ -97,6 +97,11 @@ const schema = z.object({
   // 20 000 × ~400 000 CU ≈ 0,000008 SOL : négligeable, mais évite qu'un stop-loss
   // reste bloqué quand le réseau est chargé. 0 = désactivé.
   PRIORITY_FEE_MICROLAMPORTS: z.coerce.number().min(0).default(20_000),
+  // Couverture minimale (%) : part du range dicté par la volatilité que la position
+  // exécutable (69 bins) couvre réellement. Sous ce seuil, le bin step est trop
+  // petit pour la volatilité : la position sort du range et l'IL dépasse les fees.
+  // 0 = contrôle désactivé.
+  MIN_RANGE_COVERAGE_PCT: z.coerce.number().min(0).max(100).default(50),
   // Durée de vie d'une proposition du mode supervisé (minutes) : au-delà, elle expire
   // même approuvée. Avant toute ouverture, l'agent la revalide (prix, risque).
   APPROVAL_TTL_MIN: z.coerce.number().positive().default(120),

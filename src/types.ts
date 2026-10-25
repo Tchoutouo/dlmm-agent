@@ -118,6 +118,12 @@ export interface ScoredOpportunity {
   };
   estimatedFeeApr: number; // APR proxy annualisé à partir des fees 24h
   reasons: string[]; // explications lisibles, alimentent le journal
+  /**
+   * Autres pools du même token (autres bin steps / quotes) passant les filtres de
+   * sécurité. L'analyse peut en choisir une dont le bin step couvre mieux la
+   * volatilité (voir chooseCoveredPool).
+   */
+  alternatives?: Pool[];
 }
 
 /** Décision d'entrée/sortie/rééquilibrage tracée dans le journal. */
@@ -228,6 +234,8 @@ export interface JournalEntry {
   wentOutOfRange?: boolean;
   /** Durée de détention en jours (issue). */
   holdingDays?: number;
+  /** Backtest : variation de la simple détention des tokens déposés (mouvement du marché). */
+  hodlChangeUsd?: number;
   /** Motif de sortie (backtest) : fin de fenêtre, take-profit ou stop-loss. */
   exitReason?: "horizon" | "take_profit" | "stop_loss";
   outcomeNotes?: string;
@@ -274,6 +282,8 @@ export interface RiskParams {
   maxVolatilityAnnual: number;
   minNetApr: number;
   maxStressLoss: number; // fraction (valeur positive du max toléré)
+  /** Couverture minimale du range dicté par la vol (fraction). Absent ou 0 = désactivé. */
+  minRangeCoverage?: number;
 }
 
 /** Un contrôle de risque individuel, traçable pour l'audit. */

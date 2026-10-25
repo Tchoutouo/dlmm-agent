@@ -64,6 +64,7 @@ une approbation (`npm approve-scripts`) ; les tests vérifient que SQLite foncti
 | `npm run backtest:multi -- <p1> <p2> …` | Backtest multi-pools, capital partagé | lecture |
 | `npm run backtest:sltp [-- <pools>]` | Compare 7 couples stop-loss / take-profit | lecture |
 | `npm run backtest:strategy [-- <pools>]` | Compare spot, bid-ask et bid-ask après une chute | lecture |
+| `npm run backtest:pools [-- <n>]` | Compare la pool la plus profonde et la pool au bin step adapté (fees / IL / marché) | lecture |
 | `npm run whales -- <pool>` | Gros swaps récents d'une pool | lecture RPC |
 | `npm run check` | Soldes du wallet configuré | lecture RPC |
 | `npm run devnet:wallet` · `devnet:check` · `devnet:run` | Wallet de test devnet, airdrop, test bout-en-bout | devnet |
@@ -89,7 +90,17 @@ traders DLMM et vérifiés sur les données réelles (255 → ~45 pools éligibl
 | `MIN_MARKET_CAP_USD` | `1000000` | market cap du token de base ≥ 1 M$ |
 | `MIN_RECENT_VOLUME_RATIO` | `0.5` | volume des 4 dernières heures (×6) ≥ 50 % du volume 24h : écarte les pools qui s'éteignent |
 | `EXCLUDE_TOKEN_COPIES` | `true` | même symbole qu'un token à plus grosse market cap → copie écartée |
-| — | — | **une seule pool par token**, la plus profonde |
+| — | — | **une seule pool par token** — puis l'analyse choisit, parmi ses pools, celle dont le bin step couvre la volatilité (voir ci-dessous) |
+| `MIN_RANGE_COVERAGE_PCT` | `50` | la position exécutable doit couvrir au moins 50 % du range dicté par la volatilité, sinon VETO |
+
+**Bin step et volatilité.** Une position DLMM est bornée à 69 bins : avec un petit
+bin step, elle ne couvre qu'une fraction du mouvement attendu (bin step 2 :
+±0,7 %), sort vite du range, et l'IL dépasse alors les fees. Un même token a
+souvent plusieurs pools (bin steps 20, 50, 100…) : le scanner les garde comme
+**alternatives**, et l'analyse (`chooseCoveredPool`) retient celle qui couvre le
+mieux la volatilité du token parmi celles dont l'APR net reste suffisant. Le
+contrôle `MIN_RANGE_COVERAGE_PCT` écarte ensuite les positions encore trop
+étroites.
 
 **Score** : moyenne pondérée de trois critères normalisés — rendement (fees/TVL),
 soutenabilité (volume/liquidité), profondeur (liquidité en log). Les pools qui
@@ -271,6 +282,30 @@ fees que le spot et reste perdante, même en attendant une chute (profit factor
 < 1, peu de trades). D'où les défauts actuels : sorties −8 %/+15 %, positions spot.
 Ces chiffres dépendent de la période : relancer les comparaisons avant de changer
 un réglage.
+
+### Décomposer le PnL : fees, IL, marché
+
+Chaque position simulée enregistre aussi ce qu'aurait donné la **simple
+détention** des tokens déposés. Le PnL se décompose alors en :
+
+- **fees** gagnées ;
+- **IL face à la détention** (propre au LP : le coût de fournir la liquidité) ;
+- **mouvement du marché** (ce que tout détenteur aurait subi).
+
+L'**avantage LP = fees + IL** dit si le LP bat la simple détention ; le reste est
+de l'exposition au marché, qui se gère par la sélection des pools ou une
+couverture. `npm run backtest:pools` (14 tokens, 30 jours, octobre 2026, SOL −17 %) :
+
+| Choix de pool | Avantage LP | Marché | PnL | Rendement / pool |
+|---|---|---|---|---|
+| la plus profonde, sans veto (ancien) | −262 $ | −195 $ | −457 $ | −3,26 % |
+| au bin step adapté, veto < 50 % (défaut) | −9 $ | −162 $ | −171 $ | −1,22 % |
+
+Choisir le bin step adapté supprime presque toute la perte propre au LP ; la
+perte restante vient du marché (SOL et memecoins en baisse sur la période). **La
+stratégie n'est donc pas encore rentable** : elle ne le deviendra qu'avec un
+marché porteur, une couverture de l'exposition, ou une sélection de pools moins
+exposées — à valider en backtest avant tout capital.
 
 ## Paper trading (dernier filtre avant tout capital)
 

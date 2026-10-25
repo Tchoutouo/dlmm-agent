@@ -176,6 +176,7 @@ export function runBacktest(pool: Pool, candles: Candle[], options: BacktestOpti
       e.wentOutOfRange = sim.wentOutOfRange;
       e.holdingDays = sim.holdingDays;
       e.exitReason = sim.exitReason;
+      e.hodlChangeUsd = sim.hodlChangeUsd;
       e.rangeLow = plan.rangeLow;
       e.rangeHigh = plan.rangeHigh;
       entries.push(e);
