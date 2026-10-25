@@ -257,15 +257,20 @@ export class LivePositionManager {
       // ── 2. Réouverture au prix courant (fees recomposées dans la taille) ──
       try {
         const prices = await this.oracle.getUsdPrices([row.mintX, row.mintY]);
-        const priceXUsd = prices[row.mintX] ?? 1;
-        const priceYUsd = prices[row.mintY] ?? 1;
-        const currentPrice = priceYUsd > 0 ? priceXUsd / priceYUsd : 1;
+        const priceXUsd = prices[row.mintX];
+        const priceYUsd = prices[row.mintY];
+        // Sans les deux prix, aucune réouverture : un prix inventé fausserait les montants
+        if (!priceXUsd || !priceYUsd) {
+          console.log(`     ⚠️  Rouverture annulée : prix USD indisponible pour ${row.poolName}`);
+          console.log(`     💰 Capital $${totalRecovered.toFixed(2)} disponible pour le prochain scan.`);
+          continue;
+        }
 
         const openRes = await executor.openPosition({
           poolAddress: row.poolAddress,
           sizeUsd: totalRecovered,
-          currentPrice,
-          regime: "active",
+          currentPrice: priceXUsd / priceYUsd,
+          quoteUsdPrice: priceYUsd,
         });
 
         if (openRes.mode === "LIVE" && openRes.ok && openRes.positionPubkey) {

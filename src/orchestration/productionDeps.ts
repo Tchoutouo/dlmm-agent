@@ -4,6 +4,7 @@ import { PriceOracle } from "../data/priceOracle.js";
 import { Portfolio } from "../portfolio/portfolio.js";
 import { TradeJournal } from "../journal/journal.js";
 import { scanOpportunities, isStablePool, STABLE_MINTS } from "../analytics/opportunityScanner.js";
+import { planPosition } from "../analytics/positionPlan.js";
 import { predictForwardVol } from "../ml/volatilityClient.js";
 import { loadWallet } from "../execution/wallet.js";
 import { RealExecutor } from "../execution/realExecutor.js";
@@ -113,6 +114,8 @@ export function createProductionDeps(c: ProductionClients): OrchestratorDeps {
     getForwardVol: async (addr, candles) => (await predictForwardVol(candles, "1h", addr))?.dailyVol ?? null,
     // Utilise le snapshot live (positions réelles) si disponible, sinon paper
     getSnapshot: () => manager ? manager.snapshot() : c.portfolio.snapshot(),
+    // Le risque évalue la position que l'exécuteur ouvrira réellement (spot, ≤ 69 bins)
+    planPosition: (cand, analysis) => planPosition("spot", cand.pool, analysis.suggestedRange),
     recordDecision: (d) =>
       c.journal.record({
         timestamp: new Date().toISOString(),
@@ -132,6 +135,24 @@ export function createProductionDeps(c: ProductionClients): OrchestratorDeps {
       if (!executor || !wallet) return dryRunExecute(proposal, journalId);
 
       const { candidate, analysis, risk } = proposal;
+      const plan = proposal.plan ?? planPosition("spot", candidate.pool, analysis.suggestedRange);
+
+      // Garde-fou AVANT tout envoi, swaps compris (réseau réel du RPC, DRY_RUN, ACK)
+      const gate = await executor.checkGate();
+      if (gate.mode === "REFUSE") return { ok: false, note: gate.reason };
+
+      // Prix USD réels : quote de la pool (conversion des montants) et SOL (auto-swap)
+      let quoteUsd: number;
+      let solUsd: number;
+      try {
+        [quoteUsd, solUsd] = await Promise.all([
+          c.oracle.getUsdPrice(candidate.pool.mintY),
+          c.oracle.getUsdPrice(SOL_MINT),
+        ]);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, note: `Prix USD indisponible — position annulée (${msg.slice(0, 80)})` };
+      }
 
       // Auto-swap : si la pool contient du SOL et que le solde est insuffisant,
       // on achète le SOL manquant en USDC via Jupiter avant d'ouvrir la position.
@@ -141,8 +162,8 @@ export function createProductionDeps(c: ProductionClients): OrchestratorDeps {
           candidate.pool.mintX,
           candidate.pool.mintY,
           risk.recommendedSizeUsd,
-          candidate.pool.currentPrice,
-          config.DRY_RUN
+          solUsd,
+          gate.mode === "DRY_RUN"
         );
         if (!swapOk) return { ok: false, note: "Auto-swap échoué — position annulée" };
       }
@@ -153,7 +174,9 @@ export function createProductionDeps(c: ProductionClients): OrchestratorDeps {
           poolAddress: candidate.pool.address,
           sizeUsd: risk.recommendedSizeUsd,
           currentPrice: candidate.pool.currentPrice,
-          regime: analysis.feeRegime.label,
+          quoteUsdPrice: quoteUsd,
+          rangeLow: plan.rangeLow,
+          rangeHigh: plan.rangeHigh,
         });
       } catch (err) {
         const msg = (err instanceof Error ? err.message.split("\n")[0] : String(err)) ?? "";
@@ -234,7 +257,7 @@ async function ensureSolForPool(
   mintX: string,
   mintY: string,
   sizeUsd: number,
-  currentPrice: number, // Y (quote) par X — pour SOL-USDC : USDC/SOL ≈ 145
+  solUsd: number, // prix USD du SOL (oracle) — pas le prix de la pool, qui peut être en SOL
   dryRun: boolean
 ): Promise<boolean> {
   const { connection, keypair } = wallet;
@@ -242,7 +265,7 @@ async function ensureSolForPool(
   const { PublicKey } = await import("@solana/web3.js");
 
   // ── 1. SOL (mintX) insuffisant ──────────────────────────────────────────
-  if (mintX === SOL_MINT && currentPrice > 0) {
+  if (mintX === SOL_MINT && solUsd > 0) {
     // Vérifier d'abord que tokenY est accessible (sinon le swap SOL est inutile)
     if (mintY !== SOL_MINT && mintY !== USDC_MINT && !STABLE_MINTS.has(mintY)) {
       try {
@@ -258,11 +281,11 @@ async function ensureSolForPool(
     const solHave = solLamports / 1e9;
     // Buffer 0.08 SOL couvre la rent des nouveaux bin-array accounts Meteora (~0.05 SOL chacun).
     // Minimum 0.25 SOL garantit qu'il reste assez après la création des comptes on-chain.
-    const solNeeded = Math.max(sizeUsd / 2 / currentPrice + 0.08, 0.25);
+    const solNeeded = Math.max(sizeUsd / 2 / solUsd + 0.08, 0.25);
 
     if (solHave < solNeeded) {
       const deficit    = solNeeded - solHave;
-      const deficitUsd = deficit * currentPrice * 1.1;
+      const deficitUsd = deficit * solUsd * 1.1;
       const usdcUnits  = Math.round(deficitUsd * 1e6);
       console.log(`  💱 Auto-swap : ${deficitUsd.toFixed(2)} USDC → SOL (wallet ${solHave.toFixed(3)} / besoin ${solNeeded.toFixed(3)} SOL)`);
       const r = await jupiterSwap(connection, keypair, USDC_MINT, SOL_MINT, usdcUnits, dryRun);
@@ -296,7 +319,7 @@ async function ensureSolForPool(
 
   // ── 3. USDC (mintY) insuffisant alors que le wallet a du SOL → swap SOL→USDC ──
   // Cas typique : wallet chargé en SOL mais peu de USDC (fees reçues en SOL, ou funding SOL-only).
-  if (mintY === USDC_MINT && currentPrice > 0) {
+  if (mintY === USDC_MINT && solUsd > 0) {
     // Meteora peut avoir besoin jusqu'à ~80 % de la position en USDC si le prix est proche
     // du haut du range. On cible 85 % pour couvrir ce cas sans trop sur-swapper.
     const neededUsdc = sizeUsd * 0.85;
@@ -309,8 +332,8 @@ async function ensureSolForPool(
 
     if (haveUsdc < neededUsdc) {
       const deficitUsdc = neededUsdc - haveUsdc;
-      // currentPrice = USDC par SOL, donc SOL à vendre = deficitUsdc / currentPrice
-      const solToSell = (deficitUsdc / currentPrice) * 1.1; // +10 % slippage
+      // SOL à vendre = déficit en USDC / prix USD du SOL (pas le prix de la pool)
+      const solToSell = (deficitUsdc / solUsd) * 1.1; // +10 % slippage
 
       // Garde-fou : vérifier que vendre solToSell ne descend pas sous le minimum SOL
       // requis par realExecutor (0.20 SOL pour rent + création de comptes Meteora).

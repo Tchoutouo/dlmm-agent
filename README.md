@@ -56,7 +56,7 @@ une approbation (`npm approve-scripts`) ; les tests vérifient que SQLite foncti
 
 | Commande | Effet | Réseau |
 |---|---|---|
-| `npm run scan` | Un cycle complet scan → analyse → risque → exécution (dry-run) | lecture |
+| `npm run scan` | Un cycle complet scan → analyse → risque → exécution (dry-run par défaut ; **réelle** si `DRY_RUN=false` et un wallet est configuré) | lecture / écriture |
 | `npm run paper` | Un tick de paper trading sur prix réels (`--loop` : toutes les heures, `--supervised` : via le dashboard) | lecture |
 | `npm run learn` | Rapport de l'Agent 5 sur le journal | aucun |
 | `npm run status` | État du système dans le terminal | aucun |
@@ -106,8 +106,11 @@ l'analyse : le scénario de baisse est borné et l'Agent 2 rend un VETO motivé.
 ## Sécurité & responsabilité
 
 - `DRY_RUN=true` et `NETWORK=devnet` par défaut : aucune transaction réelle.
-- Une transaction réelle sur mainnet exige `DRY_RUN=false`, `NETWORK=mainnet-beta`
-  **et** `ACKNOWLEDGE_REAL_FUNDS=true` — impossible par accident.
+- Une transaction réelle sur mainnet exige `DRY_RUN=false`, `NETWORK=mainnet-beta`,
+  un RPC **réellement** mainnet (vérifié par son hash de genèse) **et**
+  `ACKNOWLEDGE_REAL_FUNDS=true` — impossible par accident.
+- Le dashboard n'écoute que sur `127.0.0.1` ; l'exposer exige `DASHBOARD_PASSWORD`
+  (voir [Dashboard](#dashboard-de-supervision-nextjs)).
 - Ordre de validation : **backtest → paper trading → devnet → petits montants**.
 - L'IL en liquidité concentrée est **réel et amplifié** ; pour une pool TOKEN/SOL,
   le prix de SOL pèse autant que les fees.
@@ -298,8 +301,19 @@ agents et offre la visibilité et le contrôle :
 ```bash
 cd dashboard
 npm install            # better-sqlite3 se compile (toolchain C requis)
-npm run dev            # http://localhost:3000
+npm run dev            # http://localhost:3000 (écoute sur 127.0.0.1 uniquement)
 ```
+
+**Protection** (`dashboard/middleware.ts`, `lib/security.ts`, testés) : le
+dashboard peut approuver des trades et demander des clôtures, donc
+
+- sans `DASHBOARD_PASSWORD` : accessible **depuis la machine locale seulement**
+  (y compris contre le DNS rebinding) ;
+- avec `DASHBOARD_PASSWORD` (à mettre dans `dashboard/.env.local`, ignoré par git) :
+  authentification HTTP Basic sur tout le site — **obligatoire pour l'exposer**,
+  par exemple sur un VPS derrière un reverse proxy qui transmet l'en-tête `Host` ;
+- toute requête qui modifie (`POST /api/…`) doit venir de la même origine et être
+  du JSON : un site tiers ne peut pas approuver un trade à ta place (CSRF).
 
 Boucle superviseur complète : `npm run paper -- --supervised --loop` (agent, à la
 racine) + le dashboard ouvert. Esthétique « terminal de recherche » : fond sombre,
@@ -312,16 +326,29 @@ via le SDK officiel `@meteora-ag/dlmm`, mais **toujours derrière un garde-fou**
 plusieurs couches (`executionGate`, testé) :
 
 1. pas de wallet → **REFUSE** ;
-2. `DRY_RUN=true` (défaut) → **DRY_RUN** : la transaction est construite mais jamais envoyée ;
-3. envoi réel sur mainnet → **REFUSE** sauf `ACKNOWLEDGE_REAL_FUNDS=true` ;
-4. sinon (devnet, ou mainnet+ACK) → **LIVE**.
+2. `SOLANA_RPC_URL` sur un autre réseau que `NETWORK` (hash de genèse) → **REFUSE** ;
+3. `DRY_RUN=true` (défaut) → **DRY_RUN** : rien n'est envoyé ;
+4. réseau du RPC non vérifiable → **REFUSE** ;
+5. envoi réel sur mainnet → **REFUSE** sauf `ACKNOWLEDGE_REAL_FUNDS=true` ;
+6. sinon (devnet, ou mainnet+ACK) → **LIVE**.
 
-Il faut donc réunir `DRY_RUN=false` **et** `NETWORK=mainnet-beta` **et**
+Il faut donc réunir `DRY_RUN=false`, `NETWORK=mainnet-beta`, un RPC mainnet **et**
 `ACKNOWLEDGE_REAL_FUNDS=true` pour qu'un centime réel bouge — impossible par accident.
+Le garde-fou s'applique aussi aux swaps Jupiter de l'auto-swap.
 
-La stratégie de range suit le régime de l'Agent 1 (calm→Curve, active→Spot,
-volatile→BidAsk). L'exécution se lance **délibérément et à l'unité** (jamais dans
-une boucle automatique) :
+**Ce qui est ouvert = ce qui a été évalué.** La position est une forme **Spot** sur
+le range que l'agent de risque a évalué (`planPosition`), borné à 69 bins — avec un
+petit bin step, ce range est étroit (1 bps → ±0,34 %), et le risque l'évalue tel
+quel. Avant tout envoi :
+
+- les montants sont convertis avec le **prix USD du quote** (une pool TOKEN/SOL est
+  cotée en SOL, pas en dollars) ;
+- le prix on-chain du bin actif doit rester à moins de 3 % du prix analysé ;
+- la valeur totale du dépôt construit ne dépasse jamais 110 % de la taille approuvée ;
+- les soldes sont vérifiés, SOL natif compris (réserve pour la rent et les frais).
+
+L'exécution manuelle se lance à l'unité ; le démon (`npm run daemon`) et
+`npm run scan` exécutent aussi automatiquement dès que `DRY_RUN=false` :
 
 ```bash
 npm run execute -- open <adresse_pool> <taille_usd>     # devnet + dry-run par défaut
@@ -330,10 +357,10 @@ npm run execute -- close <adresse_pool> <position_pubkey>
 
 > ⚠️ **Ne pointe pas l'Agent 3 vers du capital réel** tant que le backtest et le
 > paper trading n'ont pas confirmé un avantage. Commence sur **devnet** avec un
-> wallet **dédié** (jamais ton principal) et de petits montants. La conversion
-> taille USD → montants de tokens suppose un quote stable et doit être validée
-> sur devnet. Ce dépôt est un outil d'aide à la décision, pas un conseil financier
-> ni une garantie de rendement.
+> wallet **dédié** (jamais ton principal) et de petits montants. En `DRY_RUN`,
+> l'ouverture n'interroge pas la chaîne : seul un essai devnet valide la
+> construction réelle des transactions. Ce dépôt est un outil d'aide à la
+> décision, pas un conseil financier ni une garantie de rendement.
 
 ### Cycle de vie des positions on-chain
 
