@@ -12,6 +12,8 @@ import { sizePosition } from "./positionSizing.js";
 import { recommendHedge } from "./hedging.js";
 import { quoteStressShock } from "../analytics/quoteRisk.js";
 import { config } from "../config.js";
+import { bidAskLayout, bidAskValueRatio } from "../analytics/bidAsk.js";
+import type { PositionPlan } from "../analytics/positionPlan.js";
 
 /** Convertit les pourcentages de la config en fractions internes. */
 export function riskParamsFromConfig(): RiskParams {
@@ -45,7 +47,9 @@ export function assessRisk(
   analysis: DeepAnalysis,
   snapshot: PortfolioSnapshot,
   params: RiskParams = riskParamsFromConfig(),
-  quoteProfile?: QuoteProfile
+  quoteProfile?: QuoteProfile,
+  /** Position réellement prévue (forme + range). Absent = spot sur le range suggéré. */
+  plan?: PositionPlan
 ): RiskAssessment {
   const pool = opportunity.pool;
   const checks: RiskCheck[] = [];
@@ -53,13 +57,21 @@ export function assessRisk(
   // Shock du quote en USD (0 si stable/absent) — couvre le risque SOL/USD
   const quoteShock = quoteProfile ? quoteStressShock(quoteProfile) : 0;
 
+  // Le stress et la couverture portent sur la position qui sera ouverte : pour une
+  // bid-ask d'un côté, valeur par bins au bas du range, exposition nulle à l'entrée.
+  const range = plan ? { priceLow: plan.rangeLow, priceHigh: plan.rangeHigh } : analysis.suggestedRange;
+  const stressValueRatio =
+    plan?.shape === "sol_bidask"
+      ? bidAskValueRatio(plan.rangeLow, bidAskLayout(plan.rangeLow, plan.rangeHigh, pool.binStep))
+      : undefined;
+
   // Dimensionnement (calculé tôt pour alimenter les checks et le hedge)
-  const sizing = sizePosition(pool, analysis.suggestedRange, snapshot, params, quoteShock);
+  const sizing = sizePosition(pool, range, snapshot, params, quoteShock, stressValueRatio);
   const stressLossUsd = sizing.recommendedSizeUsd * sizing.stressLossPct;
 
   const hedge = recommendHedge(
     pool,
-    analysis.suggestedRange,
+    range,
     sizing.recommendedSizeUsd,
     analysis.feeRegime,
     quoteProfile

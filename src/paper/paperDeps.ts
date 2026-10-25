@@ -24,6 +24,7 @@ export function createPaperDeps(broker: PaperBroker, c: ProductionClients): Orch
     getQuoteUsdPrice: (mint) => c.oracle.getUsdPrice(mint),
     getForwardVol: async (addr, candles) => (await predictForwardVol(candles, "1h", addr))?.dailyVol ?? null,
     getSnapshot: () => broker.snapshot(),
+    planPosition: (cand, analysis) => planPosition(config.PAPER_STRATEGY, cand.pool, analysis.suggestedRange),
     recordDecision: (d) =>
       c.journal.record({
         timestamp: new Date().toISOString(),
@@ -41,7 +42,7 @@ export function createPaperDeps(broker: PaperBroker, c: ProductionClients): Orch
       }),
     executePosition: async (proposal, journalId) => {
       const { candidate, analysis, risk } = proposal;
-      const plan = planPosition(config.PAPER_STRATEGY, candidate.pool, analysis.suggestedRange);
+      const plan = proposal.plan ?? planPosition(config.PAPER_STRATEGY, candidate.pool, analysis.suggestedRange);
       const quoteUsdEntry = await c.oracle.getUsdPrice(candidate.pool.mintY).catch(() => undefined);
       broker.open({
         journalId,
@@ -181,9 +182,9 @@ export async function paperTickSupervised(
       const candles = await c.data.getOhlcv(cand.pool.address, "1h", 168);
       const analysis = deepAnalyze(cand, candles);
       const quoteProfile = buildQuoteProfile(cand.pool.mintY, await c.oracle.getUsdPrice(cand.pool.mintY));
-      const risk = assessRisk(cand, analysis, snapshot, undefined, quoteProfile);
+      const plan = planPosition(config.PAPER_STRATEGY, cand.pool, analysis.suggestedRange);
+      const risk = assessRisk(cand, analysis, snapshot, undefined, quoteProfile, plan);
       if (risk.verdict === "APPROVE" || risk.verdict === "APPROVE_REDUCED") {
-        const plan = planPosition(config.PAPER_STRATEGY, cand.pool, analysis.suggestedRange);
         queue.enqueue({
           poolAddress: cand.pool.address,
           poolName: cand.pool.name,

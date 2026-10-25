@@ -138,7 +138,8 @@ export function runBacktest(pool: Pool, candles: Candle[], options: BacktestOpti
       exposureByPool: {},
     };
 
-    const risk = assessRisk(opportunity, analysis, snapshot, params, quoteProfile);
+    const plan = planPosition(options.strategy ?? "spot", poolNow, analysis.suggestedRange);
+    const risk = assessRisk(opportunity, analysis, snapshot, params, quoteProfile, plan);
     const ts = now.timestamp ? new Date(now.timestamp * 1000).toISOString() : new Date().toISOString();
 
     if (risk.verdict === "HALT") {
@@ -149,7 +150,6 @@ export function runBacktest(pool: Pool, candles: Candle[], options: BacktestOpti
 
     if (risk.verdict === "APPROVE" || risk.verdict === "APPROVE_REDUCED") {
       const forward = candles.slice(i, i + window);
-      const plan = planPosition(options.strategy ?? "spot", poolNow, analysis.suggestedRange);
       const sim = simulatePosition({
         entryPrice: now.close,
         sizeUsd: risk.recommendedSizeUsd,

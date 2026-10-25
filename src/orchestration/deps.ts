@@ -8,11 +8,14 @@ import type {
   RiskVerdict,
   ScoredOpportunity,
 } from "../types.js";
+import type { PositionPlan } from "../analytics/positionPlan.js";
 
 /** Proposition complète passée à l'exécution / au superviseur. */
 export interface Proposal {
   candidate: ScoredOpportunity;
   analysis: DeepAnalysis;
+  /** Forme et range évalués par le risque (absent = spot sur le range suggéré). */
+  plan?: PositionPlan;
   risk: RiskAssessment;
 }
 
@@ -41,6 +44,11 @@ export interface OrchestratorDeps {
   getCandles(poolAddress: string): Promise<Candle[]>;
   getQuoteUsdPrice(mint: string): Promise<number>;
   getSnapshot(): PortfolioSnapshot;
+  /**
+   * Optionnel : forme et range de la position qui sera ouverte (ex. bid-ask d'un
+   * côté). Absent = spot sur le range suggéré par l'analyse.
+   */
+  planPosition?(candidate: ScoredOpportunity, analysis: DeepAnalysis): PositionPlan;
   /** Optionnel (couche ML) : vol journalière future prédite pour dimensionner le range. */
   getForwardVol?(poolAddress: string, candles: Candle[]): Promise<number | null>;
   /** Persiste la décision ; renvoie l'id du journal si applicable. */

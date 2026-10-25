@@ -191,6 +191,8 @@ export interface DecisionFeatures {
   bindingCap?: string;
   hedged?: boolean;
   expectedNetApr?: number;
+  /** Forme de la position ouverte : spot (deux côtés) ou sol_bidask (un côté). */
+  shape?: "spot" | "sol_bidask";
 }
 
 export interface JournalEntry {

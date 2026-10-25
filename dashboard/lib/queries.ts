@@ -30,6 +30,8 @@ export interface OpenPosition {
   isLive: boolean;
   outOfRangeSinceSec: number | null;
   openedAtSec: number;
+  /** Forme : spot (deux côtés, centrée) ou sol_bidask (un côté en SOL/stable, sous le prix). */
+  shape: "spot" | "sol_bidask";
 }
 
 export interface CloseRequest {
@@ -125,6 +127,7 @@ export function getOpenPositions(): OpenPosition[] {
         isLive: true,
         outOfRangeSinceSec: (r.out_of_range_since_sec as number) ?? null,
         openedAtSec: (r.opened_at_sec as number) ?? 0,
+        shape: "spot",
       });
     }
   }
@@ -150,6 +153,8 @@ export function getOpenPositions(): OpenPosition[] {
         isLive: false,
         outOfRangeSinceSec: null,
         openedAtSec: 0,
+        // Colonne absente des bases antérieures à la bid-ask → spot
+        shape: r.shape === "sol_bidask" ? "sol_bidask" : "spot",
       });
     }
   }
