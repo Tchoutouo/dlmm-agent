@@ -29,6 +29,12 @@ export interface SimulateInput {
   takeProfitPct?: number;
   /** Sortie dès que le PnL tombe à −X % de la taille. 0/absent = désactivé. */
   stopLossPct?: number;
+  /**
+   * Fees par dollar de volume et par dollar de liquidité (feeShareOfVolume).
+   * Si fourni (> 0), les fees de chaque bougie suivent son VOLUME réel ;
+   * sinon, repli sur l'APR constant `feeAprAnnual`.
+   */
+  feeShareOfVolume?: number;
   /** Forme de la position (défaut spot). */
   shape?: PositionShape;
   /** Bin step de la pool (requis pour sol_bidask). */
@@ -38,8 +44,10 @@ export interface SimulateInput {
 /**
  * Simule le résultat d'une position DLMM sur un chemin de prix.
  *
- * Modèle de fees (volontairement CONSERVATEUR) :
- *   feesEarnedUsd = sizeUsd × feeAprAnnual × (holdingDays/365) × fractionInRange
+ * Modèle de fees (volontairement CONSERVATEUR), par bougie passée en range :
+ *   - par volume (feeShareOfVolume fourni) : sizeUsd × volume_bougie × feeShareOfVolume
+ *   - sinon : sizeUsd × feeAprAnnual × (durée bougie / an)
+ * (× liquidité relative du bin actif pour une bid-ask)
  *
  * Il sous-estime probablement le boost de concentration (une position en range
  * serré capte une plus grande part des fees), ce qui est le bon biais pour un
@@ -68,7 +76,9 @@ export function simulatePosition(input: SimulateInput): SimulatedOutcome {
 
   // Fees gagnées par bougie passée dans le range (pondérées par la liquidité
   // du bin actif pour une bid-ask)
-  const feePerCandleUsd = sizeUsd * feeAprAnnual * (candleSeconds / 86_400 / 365);
+  const share = input.feeShareOfVolume ?? 0;
+  const aprFeePerCandleUsd = sizeUsd * feeAprAnnual * (candleSeconds / 86_400 / 365);
+  const feeOfCandle = (c: Candle) => (share > 0 ? sizeUsd * c.volume * share : aprFeePerCandleUsd);
   const layout =
     input.shape === "sol_bidask" && input.binStep ? bidAskLayout(range.priceLow, range.priceHigh, input.binStep) : null;
   const valueRatio = (p: number) =>
@@ -76,7 +86,7 @@ export function simulatePosition(input: SimulateInput): SimulatedOutcome {
   const feeWeight = (p: number, within: boolean) => (layout ? bidAskFeeMultiplier(p, layout) : within ? 1 : 0);
 
   let inRange = 0;
-  let feeCandles = 0; // bougies en range pondérées par la liquidité active
+  let feesEarnedUsd = 0;
   let wentOutOfRange = false;
   let held = 0;
   let exitReason: SimulatedOutcome["exitReason"] = "horizon";
@@ -89,11 +99,11 @@ export function simulatePosition(input: SimulateInput): SimulatedOutcome {
     const within = c.close >= range.priceLow && c.close <= range.priceHigh;
     if (within) inRange++;
     else wentOutOfRange = true;
-    feeCandles += feeWeight(c.close, within);
+    feesEarnedUsd += feeWeight(c.close, within) * feeOfCandle(c);
 
     exitPrice = c.close;
     valueChangeUsd = sizeUsd * (valueRatio(exitPrice) - 1);
-    const pnlPct = sizeUsd > 0 ? ((valueChangeUsd + feeCandles * feePerCandleUsd) / sizeUsd) * 100 : 0;
+    const pnlPct = sizeUsd > 0 ? ((valueChangeUsd + feesEarnedUsd) / sizeUsd) * 100 : 0;
 
     if (tp > 0 && pnlPct >= tp) {
       exitReason = "take_profit";
@@ -104,8 +114,6 @@ export function simulatePosition(input: SimulateInput): SimulatedOutcome {
       break;
     }
   }
-
-  const feesEarnedUsd = feeCandles * feePerCandleUsd;
 
   return {
     exitPrice,

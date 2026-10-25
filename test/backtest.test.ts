@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { simulatePosition } from "../src/backtest/positionSimulator.js";
 import { runBacktest } from "../src/backtest/backtester.js";
+import { feeShareOfVolume, trailingFeeApr } from "../src/analytics/feeApr.js";
 import type { Candle, Pool } from "../src/types.js";
 
 const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -174,5 +175,42 @@ describe("runBacktest", () => {
     const tpExits = withTp.entries.filter((e) => e.exitReason === "take_profit");
     expect(tpExits.length).toBeGreaterThan(0);
     expect(withTp.summary.steps).toBeGreaterThan(plain.summary.steps);
+  });
+});
+
+describe("modèle de fees par volume", () => {
+  const p = pool(); // fees24h 4000, volume24h 800k, TVL 2M
+  const share = feeShareOfVolume(p);
+
+  it("feeShareOfVolume = (fees / volume) / TVL", () => {
+    expect(share).toBeCloseTo(4000 / 800_000 / 2_000_000, 15);
+  });
+
+  it("volume constant égal au volume 24h : identique au modèle APR", () => {
+    const flat = path(Array.from({ length: 24 }, () => 100)).map((c) => ({ ...c, volume: 800_000 / 24 }));
+    const base = {
+      entryPrice: 100, sizeUsd: 1000, range: { priceLow: 90, priceHigh: 110 },
+      feeAprAnnual: (4000 / 2_000_000) * 365, forwardCandles: flat, candleSeconds: 3600,
+    };
+    const byApr = simulatePosition(base);
+    const byVolume = simulatePosition({ ...base, feeShareOfVolume: share });
+    expect(byVolume.feesEarnedUsd).toBeCloseTo(byApr.feesEarnedUsd, 8);
+  });
+
+  it("les fees suivent le volume réel de chaque bougie", () => {
+    const quiet = path([100, 100, 100]).map((c) => ({ ...c, volume: 0 }));
+    const busy = path([100, 100, 100]).map((c, i) => ({ ...c, volume: i === 1 ? 300_000 : 0 }));
+    const base = {
+      entryPrice: 100, sizeUsd: 1000, range: { priceLow: 90, priceHigh: 110 },
+      feeAprAnnual: 10, candleSeconds: 3600, feeShareOfVolume: share,
+    };
+    expect(simulatePosition({ ...base, forwardCandles: quiet }).feesEarnedUsd).toBe(0);
+    expect(simulatePosition({ ...base, forwardCandles: busy }).feesEarnedUsd).toBeCloseTo(1000 * 300_000 * share, 10);
+  });
+
+  it("trailingFeeApr annualise le volume des 24 dernières bougies (pas l'activité actuelle)", () => {
+    const history = path(Array.from({ length: 48 }, () => 100)).map((c, i) => ({ ...c, volume: i < 24 ? 0 : 10_000 }));
+    expect(trailingFeeApr(p, history, 3600)).toBeCloseTo(240_000 * share * 365, 10);
+    expect(trailingFeeApr(p, history.slice(0, 24), 3600)).toBe(0); // journée morte → aucun fee attendu
   });
 });
