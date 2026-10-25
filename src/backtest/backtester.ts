@@ -13,7 +13,7 @@ import { deepAnalyze } from "../analytics/deepAnalysis.js";
 import { buildQuoteProfile } from "../analytics/quoteRisk.js";
 import { assessRisk, riskParamsFromConfig } from "../risk/riskAgent.js";
 import { simulatePosition } from "./positionSimulator.js";
-import { planPosition, type PositionShape } from "../analytics/positionPlan.js";
+import { planPosition, recentDropPct, type DipRule, type PositionShape } from "../analytics/positionPlan.js";
 import type { QuoteUsdAt } from "./quoteHistory.js";
 
 export interface BacktestOptions {
@@ -34,6 +34,11 @@ export interface BacktestOptions {
   strategy?: PositionShape;
   /** Historique du prix USD du quote (valorisation USD des pools TOKEN/SOL). */
   quoteUsdAt?: QuoteUsdAt;
+  /**
+   * N'entrer qu'après une chute récente (avec strategy sol_bidask : jouer le
+   * rebond). Sans chute suffisante, aucune position n'est ouverte à ce pas.
+   */
+  dipRule?: DipRule;
 }
 
 export interface BacktestSummary {
@@ -90,6 +95,17 @@ export function runBacktest(pool: Pool, candles: Candle[], options: BacktestOpti
     const trailing = candles.slice(i - lookback, i);
     const now = candles[i]!;
     const poolNow: Pool = { ...pool, currentPrice: now.close };
+
+    // Règle de chute : on surveille chaque bougie et on n'analyse qu'après une
+    // baisse suffisante (bougie courante incluse), sans rien journaliser sinon.
+    if (options.dipRule) {
+      const drop = recentDropPct([...trailing, now], options.dipRule.lookbackCandles + 1);
+      if (drop < options.dipRule.minDropPct) {
+        steps--;
+        advance = 1;
+        continue;
+      }
+    }
 
     const opportunity: ScoredOpportunity = {
       pool: poolNow,
@@ -165,6 +181,7 @@ export function runBacktest(pool: Pool, candles: Candle[], options: BacktestOpti
       entries.push(e);
     } else {
       skipped++;
+      if (options.dipRule) advance = 1; // chute refusée par le risque : on reguette la suivante
       entries.push(baseEntry(poolNow, "SKIP", opportunity, analysis, risk, ts));
     }
   }

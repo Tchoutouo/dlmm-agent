@@ -2,7 +2,7 @@ import { MeteoraClient } from "./data/meteoraClient.js";
 import { DataApiClient } from "./data/dataApiClient.js";
 import { PriceOracle, STABLE_MINTS } from "./data/priceOracle.js";
 import { scanOpportunities } from "./analytics/opportunityScanner.js";
-import { quoteIsSolOrStable, type PositionShape } from "./analytics/positionPlan.js";
+import { quoteIsSolOrStable, type DipRule, type PositionShape } from "./analytics/positionPlan.js";
 import { runBacktest } from "./backtest/backtester.js";
 import { loadQuoteUsdHistory, type QuoteUsdAt } from "./backtest/quoteHistory.js";
 import { computeMetrics } from "./learning/performance.js";
@@ -11,7 +11,8 @@ import type { Candle, JournalEntry, Pool } from "./types.js";
 
 /**
  * Compare la position spot (deux côtés, centrée) et la bid-ask d'un seul côté en
- * SOL/stable, sur les mêmes pools, le même historique et les mêmes décisions.
+ * SOL/stable, sur les mêmes pools et le même historique — y compris la bid-ask
+ * ouverte seulement après une chute récente (jouer le rebond).
  *
  *   npm run backtest:strategy                      # 8 meilleures pools quotées SOL/stable
  *   npm run backtest:strategy -- <addr1> <addr2>   # pools choisies
@@ -19,11 +20,20 @@ import type { Candle, JournalEntry, Pool } from "./types.js";
  * Valorisation en USD : pools TOKEN/SOL converties avec l'historique du prix de SOL.
  */
 
-const STRATEGIES: PositionShape[] = ["spot", "sol_bidask"];
+/** Variantes comparées : forme + éventuelle règle d'entrée après une chute. */
+const STRATEGIES: Array<{ label: string; shape: PositionShape; dip?: DipRule }> = [
+  { label: "spot", shape: "spot" },
+  { label: "bidask", shape: "sol_bidask" },
+  { label: "bidask chute≥5%/6h", shape: "sol_bidask", dip: { lookbackCandles: 6, minDropPct: 5 } },
+  { label: "bidask chute≥10%/6h", shape: "sol_bidask", dip: { lookbackCandles: 6, minDropPct: 10 } },
+  { label: "bidask chute≥10%/24h", shape: "sol_bidask", dip: { lookbackCandles: 24, minDropPct: 10 } },
+  { label: "bidask chute≥20%/24h", shape: "sol_bidask", dip: { lookbackCandles: 24, minDropPct: 20 } },
+];
 /** [stop-loss %, take-profit %] : détention simple, puis les seuils par défaut de l'agent. */
 const EXITS: Array<[number, number]> = [
   [0, 0],
   [config.STOP_LOSS_PCT, config.TAKE_PROFIT_PCT],
+  [4, 10], // meilleur couple du backtest SL/TP
 ];
 const DEFAULT_POOLS = 8;
 
@@ -66,7 +76,7 @@ async function main() {
   }
 
   const fmt = (v: number, d = 1) => (v >= 0 ? "+" : "") + v.toFixed(d);
-  console.log("\nStratégie    Sortie      Trades  Réussite  Profit f.  PnL total   Fees      Rdt moyen/pool  DD max");
+  console.log("\nStratégie             Sortie      Trades  Réussite  Profit f.  PnL total   Fees      Rdt moyen/pool  DD max");
   for (const [sl, tp] of EXITS) {
     for (const strategy of STRATEGIES) {
       const entries: JournalEntry[] = [];
@@ -79,7 +89,8 @@ async function main() {
         quoteUsdAt: h.quoteUsdAt ?? undefined,
           stopLossPct: sl,
           takeProfitPct: tp,
-          strategy,
+          strategy: strategy.shape,
+          dipRule: strategy.dip,
         });
         entries.push(...res.entries);
         returns.push(res.summary.totalReturnPct);
@@ -89,7 +100,7 @@ async function main() {
       const avgReturn = returns.length > 0 ? returns.reduce((s, r) => s + r, 0) / returns.length : 0;
       const exit = sl === 0 && tp === 0 ? "détention" : `−${sl}/+${tp}%`;
       console.log(
-        strategy.padEnd(13) +
+        strategy.label.padEnd(22) +
           exit.padEnd(12) +
           String(m.withOutcome).padEnd(8) +
           (m.winRate === null ? "—" : `${(m.winRate * 100).toFixed(0)}%`).padEnd(10) +

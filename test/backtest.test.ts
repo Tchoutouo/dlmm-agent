@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { simulatePosition } from "../src/backtest/positionSimulator.js";
 import { runBacktest } from "../src/backtest/backtester.js";
 import { feeShareOfVolume, trailingFeeApr } from "../src/analytics/feeApr.js";
+import { recentDropPct } from "../src/analytics/positionPlan.js";
 import type { Candle, Pool } from "../src/types.js";
 
 const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -212,5 +213,42 @@ describe("modèle de fees par volume", () => {
     const history = path(Array.from({ length: 48 }, () => 100)).map((c, i) => ({ ...c, volume: i < 24 ? 0 : 10_000 }));
     expect(trailingFeeApr(p, history, 3600)).toBeCloseTo(240_000 * share * 365, 10);
     expect(trailingFeeApr(p, history.slice(0, 24), 3600)).toBe(0); // journée morte → aucun fee attendu
+  });
+});
+
+describe("entrée après une chute (dipRule)", () => {
+  it("recentDropPct mesure la baisse depuis le plus haut de la fenêtre", () => {
+    const c = path([100, 120, 110, 90]);
+    expect(recentDropPct(c, 4)).toBeCloseTo(25, 10); // 120 → 90
+    expect(recentDropPct(c, 1)).toBe(0); // la dernière bougie seule
+    expect(recentDropPct(path([90, 95, 100]), 3)).toBe(0); // au plus haut
+  });
+
+  it("n'ouvre de position qu'après une chute suffisante, en bid-ask", () => {
+    // 72 h calmes, puis une chute de ~15 % en 6 h, puis un rebond
+    const closes: number[] = [];
+    for (let i = 0; i < 72; i++) closes.push(100 + Math.sin(i / 5) * 0.3);
+    for (let i = 1; i <= 6; i++) closes.push(100 * (1 - 0.025 * i));
+    for (let i = 0; i < 60; i++) closes.push(85 + i * 0.2);
+    const opts = { timeframe: "1h" as const, lookbackCandles: 48, windowCandles: 24, initialCashUsd: 1000 };
+    const res = runBacktest(pool(), path(closes), {
+      ...opts,
+      strategy: "sol_bidask",
+      dipRule: { lookbackCandles: 6, minDropPct: 10 },
+    });
+    const enters = res.entries.filter((e) => e.decision === "ENTER");
+    expect(enters.length).toBeGreaterThan(0);
+    for (const e of enters) {
+      const t = (Date.parse(e.timestamp) / 1000 - 1_700_000_000) / 3600;
+      expect(t).toBeGreaterThanOrEqual(75); // pas avant que la chute atteigne 10 % (prix 90, index 75)
+      expect(e.rangeHigh).toBeCloseTo(closes[t]!, 6); // bid-ask : range sous le prix d'entrée
+    }
+    // aucune entrée pendant la phase calme
+    const calm = runBacktest(pool(), path(closes.slice(0, 72)), {
+      ...opts,
+      strategy: "sol_bidask",
+      dipRule: { lookbackCandles: 6, minDropPct: 10 },
+    });
+    expect(calm.summary.entered).toBe(0);
   });
 });

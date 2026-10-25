@@ -1,4 +1,4 @@
-import type { Pool } from "../types.js";
+import type { Candle, Pool } from "../types.js";
 import { SOL_MINT, STABLE_MINTS } from "../data/priceOracle.js";
 import { bidAskEffectiveLow, bidAskLayout } from "./bidAsk.js";
 
@@ -8,6 +8,24 @@ import { bidAskEffectiveLow, bidAskLayout } from "./bidAsk.js";
  *  - sol_bidask : un seul côté en quote (SOL ou stable), bins sous le prix, forme bid-ask.
  */
 export type PositionShape = "spot" | "sol_bidask";
+
+/** Règle d'entrée « après une chute » : baisse depuis le plus haut des N dernières bougies. */
+export interface DipRule {
+  lookbackCandles: number;
+  minDropPct: number;
+}
+
+/**
+ * Baisse (en %) du dernier prix de clôture par rapport au plus haut des clôtures
+ * des `lookbackCandles` dernières bougies. 0 si le prix est au plus haut.
+ */
+export function recentDropPct(candles: Candle[], lookbackCandles: number): number {
+  const window = candles.slice(-Math.max(1, lookbackCandles));
+  if (window.length === 0) return 0;
+  const high = Math.max(...window.map((c) => c.close));
+  const last = window[window.length - 1]!.close;
+  return high > 0 ? Math.max(0, ((high - last) / high) * 100) : 0;
+}
 
 export interface PositionPlan {
   shape: PositionShape;
