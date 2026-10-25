@@ -25,8 +25,10 @@ export interface ApprovalRequest {
 export interface ApprovalRow extends ApprovalRequest {
   id: number;
   createdAt: string;
-  status: "PENDING" | "APPROVED" | "REJECTED" | "EXECUTED";
+  status: "PENDING" | "APPROVED" | "REJECTED" | "EXECUTED" | "EXPIRED";
   decidedAt?: string;
+  /** Motif de l'issue (expiration, revalidation refusée…). */
+  note?: string;
 }
 
 /**
@@ -36,6 +38,10 @@ export interface ApprovalRow extends ApprovalRequest {
  * asynchrone et adapté à une UI : l'agent enfile une proposition PENDING, le
  * dashboard la résout (APPROVED/REJECTED), et l'agent ouvre les approuvées au
  * tick suivant. Table partagée avec le journal/broker (même fichier SQLite).
+ *
+ * Une approbation porte sur un prix et un état de portefeuille datés : au-delà
+ * d'APPROVAL_TTL_MIN elle EXPIRE, et avant toute ouverture l'agent la revalide
+ * (voir openApprovedProposals).
  */
 export class ApprovalQueue {
   private db: Database.Database;
@@ -68,9 +74,12 @@ export class ApprovalQueue {
         decided_at TEXT
       );
     `);
+    // Migration : motif de l'issue (bases créées avant l'expiration des approbations)
+    const cols = (this.db.prepare(`PRAGMA table_info(approvals)`).all() as Array<{ name: string }>).map((c) => c.name);
+    if (!cols.includes("note")) this.db.exec(`ALTER TABLE approvals ADD COLUMN note TEXT`);
   }
 
-  enqueue(r: ApprovalRequest): number {
+  enqueue(r: ApprovalRequest, createdAt: Date = new Date()): number {
     const info = this.db
       .prepare(
         `INSERT INTO approvals
@@ -79,7 +88,7 @@ export class ApprovalQueue {
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       )
       .run(
-        new Date().toISOString(), r.poolAddress, r.poolName, r.mintX, r.mintY,
+        createdAt.toISOString(), r.poolAddress, r.poolName, r.mintX, r.mintY,
         r.entryPrice, r.rangeLow, r.rangeHigh, r.sizeUsd, r.feeAprAnnual, r.verdict,
         r.volAnnual, r.regime, r.expectedNetApr, r.binStep, r.hedged ? 1 : 0, r.rationale
       );
@@ -99,8 +108,34 @@ export class ApprovalQueue {
       .run(approved ? "APPROVED" : "REJECTED", new Date().toISOString(), id);
   }
 
-  markExecuted(id: number): void {
-    this.db.prepare(`UPDATE approvals SET status='EXECUTED' WHERE id=?`).run(id);
+  markExecuted(id: number, note?: string): void {
+    this.db.prepare(`UPDATE approvals SET status='EXECUTED', note=? WHERE id=?`).run(note ?? null, id);
+  }
+
+  /** Abandonne une proposition (PENDING ou APPROVED) avec son motif. */
+  markExpired(id: number, note: string): void {
+    this.db
+      .prepare(`UPDATE approvals SET status='EXPIRED', note=? WHERE id=? AND status IN ('PENDING','APPROVED')`)
+      .run(note, id);
+  }
+
+  /** Expire les propositions PENDING/APPROVED créées il y a plus de `ttlMin` minutes. */
+  expireStale(ttlMin: number, now: Date = new Date()): number {
+    const cutoff = new Date(now.getTime() - ttlMin * 60_000).toISOString();
+    return this.db
+      .prepare(
+        `UPDATE approvals SET status='EXPIRED', note=? WHERE status IN ('PENDING','APPROVED') AND created_at < ?`
+      )
+      .run(`expirée : plus de ${ttlMin} min sans exécution`, cutoff).changes;
+  }
+
+  /** Une proposition encore en jeu (PENDING ou APPROVED) existe-t-elle pour cette pool ? */
+  hasOpenProposal(poolAddress: string): boolean {
+    return Boolean(
+      this.db
+        .prepare(`SELECT 1 FROM approvals WHERE pool_address=? AND status IN ('PENDING','APPROVED') LIMIT 1`)
+        .get(poolAddress)
+    );
   }
 
   private list(where: string): ApprovalRow[] {
@@ -128,6 +163,7 @@ export class ApprovalQueue {
       rationale: r.rationale as string,
       status: r.status as ApprovalRow["status"],
       decidedAt: (r.decided_at as string) ?? undefined,
+      note: (r.note as string) ?? undefined,
     }));
   }
 

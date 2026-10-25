@@ -239,11 +239,27 @@ describe("assessRisk — position prévue (forme et range)", () => {
   const bidask = planPosition("sol_bidask", memeSol, suggested);
   const wide = analysis({ suggestedRange: suggested });
 
-  it("sans plan : comportement inchangé (spot sur le range suggéré)", () => {
-    const a = assessRisk(opportunity(memeSol), wide, snapshot(), PARAMS);
-    const b = assessRisk(opportunity(memeSol), wide, snapshot(), PARAMS, undefined, planPosition("spot", memeSol, suggested));
+  it("plan spot dont le range tient dans une position : identique à l'absence de plan", () => {
+    const narrow = { priceLow: 95, priceHigh: 105 }; // ±5 % < ±7 % (34 bins de 20 bps)
+    const a = assessRisk(opportunity(memeSol), analysis({ suggestedRange: narrow }), snapshot(), PARAMS);
+    const b = assessRisk(
+      opportunity(memeSol), analysis({ suggestedRange: narrow }), snapshot(), PARAMS, undefined,
+      planPosition("spot", memeSol, narrow)
+    );
     expect(b.stressLossPct).toBeCloseTo(a.stressLossPct, 12);
     expect(b.recommendedSizeUsd).toBe(a.recommendedSizeUsd);
+  });
+
+  it("plan spot borné à 69 bins : le stress porte sur le range réellement exécutable", () => {
+    const plan = planPosition("spot", memeSol, suggested); // ±20 % demandé → ±7 % exécutable
+    expect(plan.rangeLow).toBeGreaterThan(suggested.priceLow);
+    const r = assessRisk(opportunity(memeSol), wide, snapshot(), PARAMS, undefined, plan);
+    const onPlan = assessRisk(
+      opportunity(memeSol),
+      analysis({ suggestedRange: { priceLow: plan.rangeLow, priceHigh: plan.rangeHigh } }),
+      snapshot(), PARAMS
+    );
+    expect(r.stressLossPct).toBeCloseTo(onPlan.stressLossPct, 12);
   });
 
   it("bid-ask : perte de stress calculée par bins sur son propre range", () => {

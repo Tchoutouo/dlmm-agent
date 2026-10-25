@@ -32,7 +32,7 @@ import { Portfolio } from "../src/portfolio/portfolio.js";
 import { TradeJournal } from "../src/journal/journal.js";
 import { RealExecutor } from "../src/execution/realExecutor.js";
 import { LivePositionManager } from "../src/execution/livePositionManager.js";
-import { classifyFeeRegime } from "../src/analytics/dlmmFees.js";
+import { planPosition } from "../src/analytics/positionPlan.js";
 import { scanOpportunities } from "../src/analytics/opportunityScanner.js";
 import { deepAnalyze } from "../src/analytics/deepAnalysis.js";
 import { assessRisk } from "../src/risk/riskAgent.js";
@@ -113,7 +113,12 @@ async function main() {
   const portfolio = new Portfolio();
   const snapshot = portfolio.snapshot();
 
-  const approvedList: { pool: (typeof candidates)[0]["pool"]; sizeUsd: number; analysis: ReturnType<typeof deepAnalyze> }[] = [];
+  const approvedList: {
+    pool: (typeof candidates)[0]["pool"];
+    sizeUsd: number;
+    quoteUsd: number;
+    plan: ReturnType<typeof planPosition>;
+  }[] = [];
 
   for (const c of candidates) {
     console.log(`\n  → ${c.pool.name}`);
@@ -122,7 +127,8 @@ async function main() {
       const analysis = deepAnalyze(c, candles);
       const quoteUsd = await oracle.getUsdPrice(c.pool.mintY);
       const quoteProfile = buildQuoteProfile(c.pool.mintY, quoteUsd);
-      const risk = assessRisk(c, analysis, snapshot, undefined, quoteProfile);
+      const plan = planPosition("spot", c.pool, analysis.suggestedRange);
+      const risk = assessRisk(c, analysis, snapshot, undefined, quoteProfile, plan);
 
       console.log(`     APR net   : ${analysis.riskAdjustedNetApr.toFixed(1)}%`);
       console.log(`     Vol annu. : ${(analysis.volatility.sigmaAnnual * 100).toFixed(0)}%`);
@@ -131,7 +137,7 @@ async function main() {
       console.log(`     Raisons   : ${risk.reasons.join(" | ")}`);
 
       if (risk.verdict === "APPROVE" || risk.verdict === "APPROVE_REDUCED") {
-        approvedList.push({ pool: c.pool, sizeUsd: risk.recommendedSizeUsd, analysis });
+        approvedList.push({ pool: c.pool, sizeUsd: risk.recommendedSizeUsd, quoteUsd, plan });
       }
     } catch (err) {
       console.log(`     ⚠️  Erreur d'analyse : ${err instanceof Error ? err.message : err}`);
@@ -152,15 +158,16 @@ async function main() {
   const journal = new TradeJournal();
   const manager = new LivePositionManager(wallet, oracle);
 
-  for (const { pool, sizeUsd, analysis } of approvedList) {
+  for (const { pool, sizeUsd, quoteUsd, plan } of approvedList) {
     console.log(`\n  → ${pool.name}  $${sizeUsd.toFixed(0)}`);
-    const regime = classifyFeeRegime(pool).label;
 
     const res = await executor.openPosition({
       poolAddress: pool.address,
       sizeUsd,
       currentPrice: pool.currentPrice,
-      regime,
+      quoteUsdPrice: quoteUsd,
+      rangeLow: plan.rangeLow,
+      rangeHigh: plan.rangeHigh,
     });
 
     console.log(`     [${res.mode}] ${res.ok ? "OK" : "REFUS"} — ${res.note}`);

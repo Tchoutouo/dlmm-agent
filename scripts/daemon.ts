@@ -11,7 +11,6 @@
  */
 
 import "dotenv/config";
-import Database from "better-sqlite3";
 import { loadWallet } from "../src/execution/wallet.js";
 import { PriceOracle } from "../src/data/priceOracle.js";
 import { TradeJournal } from "../src/journal/journal.js";
@@ -20,6 +19,8 @@ import { LivePositionManager } from "../src/execution/livePositionManager.js";
 import { createClients, createProductionDeps } from "../src/orchestration/productionDeps.js";
 import { buildOrchestrator } from "../src/orchestration/graph.js";
 import { config } from "../src/config.js";
+import { JobLock } from "../src/lib/jobLock.js";
+import { processCloseRequests, recoverStuckCloseRequests } from "../src/execution/closeRequests.js";
 
 const MARK_INTERVAL_MS  = 20 * 60 * 1_000;  // 20 minutes
 const SCAN_INTERVAL_MS  =  1 * 60 * 60 * 1_000;  // 1 heure
@@ -53,61 +54,6 @@ async function markPositions(
   if (closed > 0) console.log(`  ${closed} position(s) clôturée(s) à échéance`);
 }
 
-/**
- * Traite les demandes de clôture manuelles créées par le dashboard.
- * La table `close_requests` est le canal IPC entre Next.js et le daemon.
- */
-async function processCloseRequests(
-  manager: LivePositionManager,
-  executor: RealExecutor,
-  journal: TradeJournal
-) {
-  const db = new Database(config.JOURNAL_DB_PATH);
-  try {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS close_requests (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        pool_address TEXT NOT NULL, position_pubkey TEXT NOT NULL, pool_name TEXT NOT NULL,
-        requested_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING',
-        result_ok INTEGER, result_note TEXT, result_tx TEXT
-      );
-    `);
-
-    const pending = db
-      .prepare("SELECT * FROM close_requests WHERE status='PENDING'")
-      .all() as Array<Record<string, unknown>>;
-    if (pending.length === 0) return;
-
-    console.log(`\n[${ts()}] ▶ ${pending.length} demande(s) de clôture manuelle`);
-    for (const req of pending) {
-      const id = req.id as number;
-      db.prepare("UPDATE close_requests SET status='PROCESSING' WHERE id=?").run(id);
-      console.log(`  🔒 Clôture ${req.pool_name} (${(req.position_pubkey as string).slice(0, 8)}…)`);
-      try {
-        const result = await manager.closeByRequest(
-          req.pool_address as string,
-          req.position_pubkey as string,
-          executor,
-          journal
-        );
-        db.prepare(
-          "UPDATE close_requests SET status=?, result_ok=?, result_note=?, result_tx=? WHERE id=?"
-        ).run(result.ok ? "DONE" : "ERROR", result.ok ? 1 : 0, result.note, result.txHash ?? null, id);
-        console.log(`  ${result.ok ? "✅" : "⚠️ "} ${result.note}`);
-      } catch (err) {
-        const msg = (err instanceof Error ? err.message.split("\n")[0] : String(err)) ?? "";
-        db.prepare("UPDATE close_requests SET status='ERROR', result_note=? WHERE id=?").run(
-          msg.slice(0, 200),
-          id
-        );
-        console.log(`  ⚠️  Erreur clôture: ${msg.slice(0, 80)}`);
-      }
-    }
-  } finally {
-    db.close();
-  }
-}
-
 async function scanMarket(clients: ReturnType<typeof createClients>) {
   console.log(`\n[${ts()}] ▶ Scan du marché`);
   const deps = createProductionDeps(clients);
@@ -138,29 +84,32 @@ async function main() {
   const journal = new TradeJournal();
   const executor = new RealExecutor(wallet);
   const manager  = new LivePositionManager(wallet, oracle);
+  // Clients créés UNE fois et réutilisés à chaque scan (connexions SQLite, suivi live)
   const clients  = createClients();
   clients.manager = manager;
 
+  // Un seul job on-chain à la fois : marquage, scan et clôtures signent avec le même wallet
+  const lock = new JobLock();
+  const run = (name: string, job: () => Promise<unknown>) =>
+    lock.runExclusive(name, async () => { await job(); }).catch((e) => console.error(`Erreur ${name}:`, e.message));
+
+  const recovered = recoverStuckCloseRequests(config.JOURNAL_DB_PATH);
+  if (recovered > 0) console.log(`  ↻ ${recovered} demande(s) de clôture interrompue(s) reprise(s)`);
+
   // Tick immédiat au démarrage — délai entre mark et scan pour éviter les 429 RPC
-  await markPositions(manager, executor, journal);
+  await run("marquage", () => markPositions(manager, executor, journal));
   await new Promise((r) => setTimeout(r, 10_000));
-  await scanMarket(clients);
+  await run("scan", () => scanMarket(clients));
 
   // Suivi régulier
-  const markTimer = setInterval(
-    () => markPositions(manager, executor, journal).catch((e) => console.error("Erreur mark:", e.message)),
-    MARK_INTERVAL_MS
-  );
+  const markTimer = setInterval(() => void run("marquage", () => markPositions(manager, executor, journal)), MARK_INTERVAL_MS);
 
   // Scan périodique
-  const scanTimer = setInterval(
-    () => scanMarket(createClients()).catch((e) => console.error("Erreur scan:", e.message)),
-    SCAN_INTERVAL_MS
-  );
+  const scanTimer = setInterval(() => void run("scan", () => scanMarket(clients)), SCAN_INTERVAL_MS);
 
   // Clôtures manuelles (demandes du dashboard) — vérifié toutes les 2 min
   const closeTimer = setInterval(
-    () => processCloseRequests(manager, executor, journal).catch((e) => console.error("Erreur close:", e.message)),
+    () => void run("clôtures demandées", () => processCloseRequests(config.JOURNAL_DB_PATH, manager, executor, journal)),
     CLOSE_CHECK_INTERVAL_MS
   );
 

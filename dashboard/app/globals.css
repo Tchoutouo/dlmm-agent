@@ -79,6 +79,8 @@ tr:last-child td { border-bottom: none; }
 .tag.skip { color: var(--muted); }
 .tag.halt { color: var(--red); border-color: var(--red); }
 .tag.hold { color: var(--accent); }
+.tag.dry_run { color: var(--muted); border-style: dashed; }
+.tag.failed { color: var(--red); }
 
 .muted { color: var(--muted); }
 .tiny { font-size: 11px; }

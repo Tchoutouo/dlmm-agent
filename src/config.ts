@@ -93,6 +93,13 @@ const schema = z.object({
   // Forme des positions PAPER : "spot" (deux côtés, centré) ou "sol_bidask"
   // (un seul côté en SOL/stable, bins sous le prix). Pas encore utilisé en live.
   PAPER_STRATEGY: z.enum(["spot", "sol_bidask"]).default("spot"),
+  // Frais de priorité des transactions DLMM (micro-lamports par unité de calcul).
+  // 20 000 × ~400 000 CU ≈ 0,000008 SOL : négligeable, mais évite qu'un stop-loss
+  // reste bloqué quand le réseau est chargé. 0 = désactivé.
+  PRIORITY_FEE_MICROLAMPORTS: z.coerce.number().min(0).default(20_000),
+  // Durée de vie d'une proposition du mode supervisé (minutes) : au-delà, elle expire
+  // même approuvée. Avant toute ouverture, l'agent la revalide (prix, risque).
+  APPROVAL_TTL_MIN: z.coerce.number().positive().default(120),
   // Perte journalière maximale (% de la NAV d'ouverture du jour UTC) → HALT. 0 = désactivé.
   MAX_DAILY_LOSS_PCT: z.coerce.number().min(0).default(5),
   // Whale-tracking on-chain : seuil USD d'un swap « baleine » et profondeur de scan.

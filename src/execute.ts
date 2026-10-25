@@ -1,6 +1,5 @@
 import { MeteoraClient } from "./data/meteoraClient.js";
 import { PriceOracle } from "./data/priceOracle.js";
-import { classifyFeeRegime } from "./analytics/dlmmFees.js";
 import { loadWallet } from "./execution/wallet.js";
 import { RealExecutor } from "./execution/realExecutor.js";
 import { LivePositionManager } from "./execution/livePositionManager.js";
@@ -37,12 +36,11 @@ async function main() {
 
   if (action === "open" && address && arg) {
     const pool = await new MeteoraClient().getPair(address);
-    const regime = classifyFeeRegime(pool).label;
     const res = await exec.openPosition({
       poolAddress: address,
       sizeUsd: Number(arg),
       currentPrice: pool.currentPrice,
-      regime,
+      quoteUsdPrice: await new PriceOracle().getUsdPrice(pool.mintY),
     });
     console.log(`\n[${res.mode}] ${res.ok ? "OK" : "REFUS"} — ${res.note}`);
     if (res.txHash) console.log(`tx: ${res.txHash}`);

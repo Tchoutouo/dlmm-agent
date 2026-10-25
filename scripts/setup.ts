@@ -15,7 +15,7 @@
  */
 
 import { execSync, spawnSync } from "child_process";
-import { existsSync, mkdirSync, copyFileSync } from "fs";
+import { existsSync, mkdirSync, copyFileSync, chmodSync } from "fs";
 import { join } from "path";
 import { fileURLToPath } from "url";
 
@@ -82,6 +82,11 @@ async function main() {
     }
   } else {
     ok(".env déjà présent");
+  }
+  // Le .env contiendra la clé du wallet : lisible par son seul propriétaire
+  if (existsSync(envPath) && process.platform !== "win32") {
+    chmodSync(envPath, 0o600);
+    ok(".env protégé (droits 600)");
   }
 
   // ④ Dépendances racine

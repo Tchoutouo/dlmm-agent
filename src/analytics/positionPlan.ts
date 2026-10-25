@@ -1,6 +1,6 @@
 import type { Candle, Pool } from "../types.js";
 import { SOL_MINT, STABLE_MINTS } from "../data/priceOracle.js";
-import { bidAskEffectiveLow, bidAskLayout } from "./bidAsk.js";
+import { MAX_BINS_PER_POSITION, bidAskEffectiveLow, bidAskLayout } from "./bidAsk.js";
 
 /**
  * Forme de position simulée :
@@ -42,6 +42,11 @@ export function quoteIsSolOrStable(pool: Pool): boolean {
  * Range et forme de la position selon la stratégie demandée.
  * En `sol_bidask`, le range va du bas du range suggéré (dimensionné sur la vol)
  * jusqu'au prix courant, borné à 69 bins ; sinon repli sur la position spot.
+ *
+ * En `spot`, le range suggéré est borné à ce qu'UNE position peut couvrir
+ * (69 bins centrés sur le prix) : c'est ce range-là que l'exécuteur réel ouvre,
+ * donc celui que le risque, le paper trading et le backtest doivent évaluer.
+ * Avec un petit bin step, le range exécutable est étroit (1 bps → ±0,34 %).
  */
 export function planPosition(
   strategy: PositionShape,
@@ -52,5 +57,21 @@ export function planPosition(
     const layout = bidAskLayout(suggestedRange.priceLow, pool.currentPrice, pool.binStep);
     return { shape: "sol_bidask", rangeLow: bidAskEffectiveLow(layout), rangeHigh: pool.currentPrice };
   }
-  return { shape: "spot", rangeLow: suggestedRange.priceLow, rangeHigh: suggestedRange.priceHigh };
+  return { shape: "spot", ...executableSpotRange(pool, suggestedRange) };
+}
+
+/** Range spot borné aux 69 bins d'une position, centrés sur le prix courant. */
+function executableSpotRange(
+  pool: Pool,
+  suggested: { priceLow: number; priceHigh: number }
+): { rangeLow: number; rangeHigh: number } {
+  if (!(pool.binStep > 0) || !(pool.currentPrice > 0)) {
+    return { rangeLow: suggested.priceLow, rangeHigh: suggested.priceHigh };
+  }
+  const half = Math.floor((MAX_BINS_PER_POSITION - 1) / 2);
+  const reach = (1 + pool.binStep / 10_000) ** half;
+  return {
+    rangeLow: Math.max(suggested.priceLow, pool.currentPrice / reach),
+    rangeHigh: Math.min(suggested.priceHigh, pool.currentPrice * reach),
+  };
 }

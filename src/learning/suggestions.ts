@@ -34,11 +34,12 @@ export function buildSuggestions(input: {
           "Élargir les ranges (augmenter rangeSigma) ou rééquilibrer plus tôt — trop de sorties de range",
         rationale: e.description,
       });
-    } else if (e.feature === "hedged=no") {
+    } else if (e.feature === "hedgeRecommended=yes") {
       out.push({
         area: "couverture (hedge)",
         recommendation:
-          "Activer/exiger la couverture pour les positions directionnelles perdantes",
+          "Les positions pour lesquelles une couverture était recommandée (non exécutée) perdent : " +
+          "réduire leur taille ou les écarter tant que la couverture n'est pas exécutée",
         rationale: e.description,
       });
     } else if (e.feature.startsWith("binStep")) {

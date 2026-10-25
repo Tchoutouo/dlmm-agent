@@ -29,9 +29,10 @@ export function detectRecurringErrors(
   const dimensions: Array<{ prefix: string; keyOf: (e: JournalEntry) => string | undefined }> = [
     { prefix: "regime", keyOf: (e) => e.features?.feeRegime },
     {
-      prefix: "hedged",
+      // Aucune couverture n'est exécutée : on regarde si le risque en RECOMMANDAIT une
+      prefix: "hedgeRecommended",
       keyOf: (e) =>
-        e.features?.hedged === undefined ? undefined : e.features.hedged ? "yes" : "no",
+        e.features?.hedgeRecommended === undefined ? undefined : e.features.hedgeRecommended ? "yes" : "no",
     },
     {
       prefix: "outOfRange",

@@ -8,8 +8,9 @@ import type { TradeJournal } from "../journal/journal.js";
 import type { PriceOracle } from "../data/priceOracle.js";
 import type { LoadedWallet } from "./wallet.js";
 import type { RealExecutor } from "./realExecutor.js";
-import { positionValueUsd } from "./positionValue.js";
-import { readWalletUsd } from "./walletBalance.js";
+import { markablePrices, positionValueUsd } from "./positionValue.js";
+import { readWalletBalances, splitWallet } from "./walletBalance.js";
+import { SOL_MINT, STABLE_MINTS } from "../data/priceOracle.js";
 import { config } from "../config.js";
 import { trackDailyLoss } from "../risk/dailyLoss.js";
 
@@ -24,6 +25,8 @@ interface LiveRow {
   sizeUsd: number;
   valueUsd: number;
   feesUsd: number;
+  /** Fees déjà réclamées (claim) : elles font partie du rendement de la position. */
+  claimedFeesUsd: number;
   openedAtSec: number;
   everOut: boolean;
   outOfRangeSinceSec: number | null;
@@ -65,6 +68,9 @@ export class LivePositionManager {
     // Migration : ajoute out_of_range_since_sec si absent (SQLite idempotent via try/catch)
     try {
       this.db.exec(`ALTER TABLE live_positions ADD COLUMN out_of_range_since_sec INTEGER`);
+    } catch { /* colonne déjà présente */ }
+    try {
+      this.db.exec(`ALTER TABLE live_positions ADD COLUMN claimed_fees_usd REAL NOT NULL DEFAULT 0`);
     } catch { /* colonne déjà présente */ }
 
     if (!this.db.prepare(`SELECT 1 FROM live_meta WHERE key='cash'`).get()) {
@@ -116,10 +122,47 @@ export class LivePositionManager {
       sizeUsd: r.size_usd as number,
       valueUsd: r.value_usd as number,
       feesUsd: r.fees_usd as number,
+      claimedFeesUsd: (r.claimed_fees_usd as number) ?? 0,
       openedAtSec: r.opened_at_sec as number,
       everOut: Boolean(r.ever_out),
       outOfRangeSinceSec: (r.out_of_range_since_sec as number) ?? null,
     }));
+  }
+
+  /**
+   * Rendement total d'une position : valeur + fees à réclamer + fees déjà
+   * réclamées − mise. Base unique des seuils TP/SL et du PnL réalisé.
+   */
+  private totalPnlUsd(row: LiveRow): number {
+    return row.valueUsd + row.feesUsd + row.claimedFeesUsd - row.sizeUsd;
+  }
+
+  /**
+   * Enregistre la clôture effective d'une position : statut, cash (valeur + fees
+   * encore à réclamer ; les fees déjà réclamées y sont entrées au claim) et issue
+   * au journal, calculée de la même façon quel que soit le motif de clôture.
+   */
+  private settleClose(
+    row: LiveRow,
+    status: "CLOSED" | "REBALANCED",
+    journal: TradeJournal,
+    nowSec: number,
+    notes: string,
+    wentOutOfRange = row.everOut
+  ): number {
+    const recovered = row.valueUsd + row.feesUsd;
+    this.db.prepare(`UPDATE live_positions SET status=? WHERE id=?`).run(status, row.id);
+    this.setMeta("cash", this.meta("cash") + recovered);
+    if (row.journalId !== null) {
+      journal.recordOutcome(row.journalId, {
+        realizedPnlUsd: this.totalPnlUsd(row),
+        feesCollectedUsd: row.feesUsd + row.claimedFeesUsd,
+        wentOutOfRange,
+        holdingDays: (nowSec - row.openedAtSec) / 86_400,
+        notes,
+      });
+    }
+    return recovered;
   }
 
   /** Marque toutes les positions ouvertes en lisant leur état on-chain. */
@@ -135,7 +178,17 @@ export class LivePositionManager {
         const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(this.wallet.keypair.publicKey);
         const decX = dlmmPool.tokenX.mint.decimals;
         const decY = dlmmPool.tokenY.mint.decimals;
-        const prices = await this.oracle.getUsdPrices([rows[0]!.mintX, rows[0]!.mintY]);
+        const usd = markablePrices(
+          await this.oracle.getUsdPrices([rows[0]!.mintX, rows[0]!.mintY]),
+          rows[0]!.mintX,
+          rows[0]!.mintY
+        );
+        if (!usd) {
+          console.warn(
+            `  ⚠️  Prix USD manquant pour ${rows[0]!.poolName} — marquage reporté (dernière valeur conservée, aucun stop-loss sur donnée absente)`
+          );
+          continue;
+        }
 
         for (const row of rows) {
           const lp = userPositions.find((p) => p.publicKey.toBase58() === row.positionPubkey);
@@ -148,8 +201,8 @@ export class LivePositionManager {
             feeYRaw: Number(pd.feeY?.toString() ?? 0),
             decimalsX: decX,
             decimalsY: decY,
-            priceXUsd: prices[row.mintX] ?? 0,
-            priceYUsd: prices[row.mintY] ?? 0,
+            priceXUsd: usd.priceXUsd,
+            priceYUsd: usd.priceYUsd,
           });
           const nowSec = Math.floor(Date.now() / 1000);
           const inRange = activeBin.binId >= pd.lowerBinId && activeBin.binId <= pd.upperBinId;
@@ -170,10 +223,11 @@ export class LivePositionManager {
   }
 
   /**
-   * Rebalance les positions hors range depuis plus de `minOutMinutes` minutes.
-   * Stratégie : ferme la position (fees inclus), rouvre immédiatement au prix
-   * courant avec la même taille (valeur récupérée + fees). Les fees accumulées
-   * sont ainsi recomposées dans la nouvelle position.
+   * Rebalance les positions hors range depuis plus de `minOutMinutes` minutes :
+   * ferme la position (fees incluses) et libère le capital. La RÉENTRÉE n'est
+   * PAS faite ici : elle passe par le prochain scan, donc par l'agent de risque
+   * (disjoncteurs, limite journalière, veto, plafonds). Rouvrir aussitôt
+   * contournerait ces contrôles, typiquement sur une pool qui décroche.
    */
   async rebalanceOutOfRange(
     minOutMinutes: number,
@@ -204,19 +258,11 @@ export class LivePositionManager {
             `  🚫 ${row.poolName} — hors range depuis ${outH}h, fees $${row.feesUsd.toFixed(2)} (position morte) → clôture pour libérer le capital`
           );
           const closeRes = await executor.closePosition(row.poolAddress, row.positionPubkey);
-          if (closeRes.ok) {
-            const totalRecovered = row.valueUsd + row.feesUsd;
-            this.db.prepare(`UPDATE live_positions SET status='CLOSED' WHERE id=?`).run(row.id);
-            this.setMeta("cash", this.meta("cash") + totalRecovered);
-            if (row.journalId !== null) {
-              journal.recordOutcome(row.journalId, {
-                realizedPnlUsd: row.valueUsd - row.sizeUsd,
-                feesCollectedUsd: row.feesUsd,
-                wentOutOfRange: true,
-                holdingDays: (nowSec - row.openedAtSec) / 86_400,
-                notes: `clôture position morte: hors range ${outMin}min, fees $${row.feesUsd.toFixed(2)}`,
-              });
-            }
+          if (closeRes.ok && closeRes.mode !== "DRY_RUN") {
+            const totalRecovered = this.settleClose(
+              row, "CLOSED", journal, nowSec,
+              `clôture position morte: hors range ${outMin}min, fees $${row.feesUsd.toFixed(2)}`, true
+            );
             console.log(`     ✅ Capital $${totalRecovered.toFixed(2)} libéré — prochain scan cherchera une meilleure pool`);
             rebalanced++;
           } else {
@@ -240,57 +286,16 @@ export class LivePositionManager {
         continue;
       }
 
-      const totalRecovered = row.valueUsd + row.feesUsd; // liquidité + fees
-      const realizedPnlUsd = row.valueUsd - row.sizeUsd;
-      this.db.prepare(`UPDATE live_positions SET status='REBALANCED' WHERE id=?`).run(row.id);
-      this.setMeta("cash", this.meta("cash") + totalRecovered);
-      if (row.journalId !== null) {
-        journal.recordOutcome(row.journalId, {
-          realizedPnlUsd,
-          feesCollectedUsd: row.feesUsd,
-          wentOutOfRange: true,
-          holdingDays: (nowSec - row.openedAtSec) / 86_400,
-          notes: `rebalancing ${outMin}min hors range | tx ${closeRes.txHash ?? ""}`.trim(),
-        });
-      }
+      const totalRecovered = this.settleClose(
+        row, "REBALANCED", journal, nowSec,
+        `rebalancing (clôture) ${outMin}min hors range | tx ${closeRes.txHash ?? ""}`.trim(), true
+      );
 
-      // ── 2. Réouverture au prix courant (fees recomposées dans la taille) ──
-      try {
-        const prices = await this.oracle.getUsdPrices([row.mintX, row.mintY]);
-        const priceXUsd = prices[row.mintX] ?? 1;
-        const priceYUsd = prices[row.mintY] ?? 1;
-        const currentPrice = priceYUsd > 0 ? priceXUsd / priceYUsd : 1;
-
-        const openRes = await executor.openPosition({
-          poolAddress: row.poolAddress,
-          sizeUsd: totalRecovered,
-          currentPrice,
-          regime: "active",
-        });
-
-        if (openRes.mode === "LIVE" && openRes.ok && openRes.positionPubkey) {
-          this.register({
-            poolAddress: row.poolAddress,
-            poolName: row.poolName,
-            mintX: row.mintX,
-            mintY: row.mintY,
-            positionPubkey: openRes.positionPubkey,
-            sizeUsd: totalRecovered,
-            openedAtSec: nowSec,
-          });
-          console.log(`     ✅ Rouverture : ${openRes.positionPubkey.slice(0, 8)}… $${totalRecovered.toFixed(2)} (fees recomposées)`);
-          rebalanced++;
-        } else {
-          // Échec propre (ex : SOL insuffisant) — la position reste fermée, le cash est récupéré
-          console.log(`     ⚠️  Rouverture impossible : ${openRes.note}`);
-          console.log(`     💰 Capital $${totalRecovered.toFixed(2)} disponible pour le prochain scan.`);
-        }
-      } catch (err) {
-        // Erreur réseau ou simulation — on loggue sans propager, le capital est déjà récupéré
-        const msg = (err instanceof Error ? err.message.split("\n")[0] : String(err)) ?? "";
-        console.log(`     ⚠️  Rouverture échouée (${msg.slice(0, 80)})`);
-        console.log(`     💰 Capital $${totalRecovered.toFixed(2)} disponible pour le prochain scan.`);
-      }
+      // ── 2. Pas de réouverture ici : le prochain scan décide, via l'agent de risque ──
+      console.log(
+        `     ✅ Fermée — $${totalRecovered.toFixed(2)} récupérés ; réentrée éventuelle au prochain scan (agent de risque)`
+      );
+      rebalanced++;
     }
 
     return rebalanced;
@@ -312,7 +317,7 @@ export class LivePositionManager {
     let closed = 0;
 
     for (const row of this.listOpenRows()) {
-      const totalReturnPct = ((row.valueUsd + row.feesUsd - row.sizeUsd) / row.sizeUsd) * 100;
+      const totalReturnPct = (this.totalPnlUsd(row) / row.sizeUsd) * 100;
 
       let trigger: string | null = null;
       if (takeProfitPct > 0 && totalReturnPct >= takeProfitPct) {
@@ -326,18 +331,7 @@ export class LivePositionManager {
       const res = await executor.closePosition(row.poolAddress, row.positionPubkey);
       if (!res.ok || res.mode === "DRY_RUN") continue;
 
-      const realizedPnlUsd = row.valueUsd + row.feesUsd - row.sizeUsd;
-      this.db.prepare(`UPDATE live_positions SET status='CLOSED' WHERE id=?`).run(row.id);
-      this.setMeta("cash", this.meta("cash") + row.valueUsd + row.feesUsd);
-      if (row.journalId !== null) {
-        journal.recordOutcome(row.journalId, {
-          realizedPnlUsd,
-          feesCollectedUsd: row.feesUsd,
-          wentOutOfRange: row.everOut,
-          holdingDays: (nowSec - row.openedAtSec) / 86_400,
-          notes: `${trigger} | tx ${res.txHash ?? ""}`.trim(),
-        });
-      }
+      this.settleClose(row, "CLOSED", journal, nowSec, `${trigger} | tx ${res.txHash ?? ""}`.trim());
       closed++;
     }
     return closed;
@@ -355,18 +349,7 @@ export class LivePositionManager {
       // En DRY_RUN, la position n'est pas réellement fermée : on ne clôture pas le suivi.
       if (res.mode === "DRY_RUN") continue;
 
-      const realizedPnlUsd = row.valueUsd + row.feesUsd - row.sizeUsd;
-      this.db.prepare(`UPDATE live_positions SET status='CLOSED' WHERE id=?`).run(row.id);
-      this.setMeta("cash", this.meta("cash") + row.valueUsd + row.feesUsd);
-      if (row.journalId !== null) {
-        journal.recordOutcome(row.journalId, {
-          realizedPnlUsd,
-          feesCollectedUsd: row.feesUsd,
-          wentOutOfRange: row.everOut,
-          holdingDays: (nowSec - row.openedAtSec) / 86_400,
-          notes: `live ${res.txHash ?? ""}`.trim(),
-        });
-      }
+      this.settleClose(row, "CLOSED", journal, nowSec, `live ${res.txHash ?? ""}`.trim());
       closed++;
     }
     return closed;
@@ -399,7 +382,9 @@ export class LivePositionManager {
         }
         // Fees dans le wallet → ajouter au cash interne + remettre feesUsd à 0
         this.setMeta("cash", this.meta("cash") + row.feesUsd);
-        this.db.prepare(`UPDATE live_positions SET fees_usd=0 WHERE id=?`).run(row.id);
+        this.db
+          .prepare(`UPDATE live_positions SET claimed_fees_usd=claimed_fees_usd+?, fees_usd=0 WHERE id=?`)
+          .run(row.feesUsd, row.id);
         console.log(`  💰 Fees réclamées ${row.poolName}: +$${row.feesUsd.toFixed(2)} → cash`);
         totalClaimed += row.feesUsd;
       } catch (err) {
@@ -448,26 +433,16 @@ export class LivePositionManager {
     journal: TradeJournal
   ): Promise<{ ok: boolean; note: string; txHash?: string }> {
     const nowSec = Math.floor(Date.now() / 1000);
-    const row = this.listOpenRows().find((r) => r.positionPubkey === positionPubkey);
+    const row = this.listOpenRows().find((r) => r.positionPubkey === positionPubkey && r.poolAddress === poolAddress);
+    // Seules les positions ouvertes ET suivies par l'agent peuvent être fermées à la
+    // demande : une position ouverte à la main dans le même wallet n'est jamais touchée.
+    if (!row) return { ok: false, note: "Position non suivie par l'agent (ou déjà fermée) — rien n'est fermé" };
 
     const res = await executor.closePosition(poolAddress, positionPubkey);
     if (!res.ok) return { ok: false, note: res.note };
     if (res.mode === "DRY_RUN") return { ok: true, note: res.note };
 
-    if (row) {
-      const realizedPnlUsd = row.valueUsd - row.sizeUsd;
-      this.db.prepare(`UPDATE live_positions SET status='CLOSED' WHERE id=?`).run(row.id);
-      this.setMeta("cash", this.meta("cash") + row.valueUsd + row.feesUsd);
-      if (row.journalId !== null) {
-        journal.recordOutcome(row.journalId, {
-          realizedPnlUsd,
-          feesCollectedUsd: row.feesUsd,
-          wentOutOfRange: row.everOut,
-          holdingDays: (nowSec - row.openedAtSec) / 86_400,
-          notes: `clôture manuelle | tx ${res.txHash ?? ""}`.trim(),
-        });
-      }
-    }
+    this.settleClose(row, "CLOSED", journal, nowSec, `clôture manuelle | tx ${res.txHash ?? ""}`.trim());
 
     return {
       ok: true,
@@ -481,9 +456,11 @@ export class LivePositionManager {
   }
 
   /**
-   * Photo RÉELLE : cash = solde on-chain du wallet (SOL + tokens valorisés),
-   * positions = valeur on-chain (dernier mark). NAV reflète l'état réel, à
-   * utiliser de préférence à snapshot() pour le dimensionnement du risque en réel.
+   * Photo RÉELLE, utilisée par l'agent de risque en live :
+   *  - cash = SOL + stablecoins du wallet (capital déployable) ;
+   *  - positions = positions DLMM (dernier mark) + INVENTAIRE : les autres tokens
+   *    du wallet (restes de positions fermées) comptent comme exposition, pas
+   *    comme cash — ils entrent dans les plafonds d'exposition.
    */
   async realSnapshot(): Promise<PortfolioSnapshot> {
     const open = this.listOpenRows();
@@ -495,10 +472,29 @@ export class LivePositionManager {
       sizeUsd: r.sizeUsd,
       valueUsd: r.valueUsd + r.feesUsd, // tokens + fees = valeur totale récupérable
     }));
-    const wallet = await readWalletUsd(this.wallet.connection, this.wallet.keypair.publicKey, this.oracle);
-    const cashUsd = wallet.totalUsd;
+    const balances = await readWalletBalances(this.wallet.connection, this.wallet.keypair.publicKey);
+    const prices = balances.length > 0 ? await this.oracle.getUsdPrices(balances.map((b) => b.mint)) : {};
+    const wallet = splitWallet(balances, prices, (m) => m === SOL_MINT || STABLE_MINTS.has(m));
+    for (const inv of wallet.inventory) {
+      if (inv.usd <= 0) continue;
+      positions.push({
+        poolAddress: `inventory:${inv.mint}`,
+        poolName: `Inventaire ${inv.mint.slice(0, 6)}…`,
+        mintX: inv.mint,
+        mintY: inv.mint,
+        sizeUsd: inv.usd,
+        valueUsd: inv.usd,
+      });
+    }
+    const cashUsd = wallet.cashUsd;
     const deployedUsd = positions.reduce((s, p) => s + p.valueUsd, 0);
     const navUsd = cashUsd + deployedUsd;
+    // Pic calibré UNE fois sur la première photo réelle (INITIAL_CASH_USD n'est
+    // qu'une valeur par défaut), puis il ne fait que monter.
+    if (!this.meta("peak_calibrated")) {
+      this.setMeta("peak_nav", navUsd);
+      this.setMeta("peak_calibrated", 1);
+    }
     let peak = this.meta("peak_nav");
     if (navUsd > peak) {
       peak = navUsd;
@@ -511,9 +507,8 @@ export class LivePositionManager {
     this.setMeta("real_nav_usd", navUsd);
     this.setMeta("real_cash_usd", cashUsd);
 
-    // Recalibration automatique quand aucune position n'est ouverte.
-    // Sans positions déployées, le wallet EST le portefeuille entier.
-    // Le tracker (cash, peak_nav) doit correspondre à la réalité on-chain.
+    // Recalibration du cash suivi quand aucune position n'est ouverte :
+    // sans positions déployées, le cash déployable du wallet fait foi.
     if (open.length === 0) {
       // ── Cash ──
       const trackedCash = this.meta("cash");
@@ -525,16 +520,14 @@ export class LivePositionManager {
         this.setMeta("cash", cashUsd);
       }
 
-      // ── Peak NAV ──
-      // Quand il n'y a aucune position, le wallet est le seul actif.
-      // Si peak_nav > wallet réel, le pic est stale ou inflaté (marks gonflés à la fermeture).
-      // On le ramène à la valeur réelle pour éviter un HALT fantôme.
-      const oldPeak = this.meta("peak_nav");
-      if (oldPeak > cashUsd + 0.50) {
+      // ── Peak NAV ── jamais abaissé automatiquement : le ramener à la NAV courante
+      // effacerait le drawdown et réarmerait le disjoncteur après une perte.
+      // Si le pic est erroné, le corriger à la main (live_meta.peak_nav).
+      if (drawdownPct >= config.MAX_DRAWDOWN_PCT) {
         console.log(
-          `  📊 Recalibration peak_nav : $${oldPeak.toFixed(2)} → $${cashUsd.toFixed(2)} (aucune position ouverte — pic stale ou inflaté)`
+          `  ⚠️  Disjoncteur : pic $${peak.toFixed(2)} vs NAV $${navUsd.toFixed(2)} — entrées suspendues ` +
+            `jusqu'à décision humaine (corriger live_meta.peak_nav si le pic est erroné)`
         );
-        this.setMeta("peak_nav", cashUsd);
       }
     }
 
