@@ -27,6 +27,7 @@ export function createPaperDeps(broker: PaperBroker, c: ProductionClients): Orch
     getQuoteUsdPrice: (mint) => c.oracle.getUsdPrice(mint),
     getForwardVol: async (addr, candles) => (await predictForwardVol(candles, "1h", addr))?.dailyVol ?? null,
     getSnapshot: () => broker.snapshot(),
+    amendDecision: (id, decision, note) => c.journal.amendDecision(id, decision, note),
     planPosition: (cand, analysis) => planPosition(config.PAPER_STRATEGY, cand.pool, analysis.suggestedRange),
     recordDecision: (d) =>
       c.journal.record({
@@ -66,6 +67,7 @@ export function createPaperDeps(broker: PaperBroker, c: ProductionClients): Orch
       return {
         ok: true,
         note: `PAPER : position simulée ouverte ($${risk.recommendedSizeUsd.toFixed(0)}, ${plan.shape})`,
+        mode: "PAPER",
       };
     },
   };
@@ -192,7 +194,8 @@ export async function openApprovedProposals(
         volatilityAnnual: analysis.volatility.sigmaAnnual,
         binStep: pool.binStep,
         bindingCap: risk.bindingCap,
-        hedged: risk.hedge.recommended,
+        hedged: false, // aucune couverture n'est exécutée
+        hedgeRecommended: risk.hedge.recommended,
         expectedNetApr: analysis.riskAdjustedNetApr,
         shape: plan.shape,
       },

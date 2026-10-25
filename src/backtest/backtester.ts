@@ -227,7 +227,8 @@ function baseEntry(
       volatilityAnnual: analysis.volatility.sigmaAnnual,
       binStep: pool.binStep,
       bindingCap: risk.bindingCap,
-      hedged: risk.hedge.recommended,
+      hedged: false, // la couverture n'est pas simulée
+      hedgeRecommended: risk.hedge.recommended,
       expectedNetApr: analysis.riskAdjustedNetApr,
     },
     rationale: [...analysis.rationale, ...risk.reasons].join(" | "),

@@ -245,6 +245,33 @@ export function getLearning(): LearningSummary {
 
 // ── Demandes de clôture manuelle ──────────────────────────────────────────────
 
+/** Nombre maximal de demandes de clôture en attente (anti-flood). */
+export const MAX_ACTIVE_CLOSE_REQUESTS = 20;
+
+/** La position est-elle une position réelle OUVERTE suivie par l'agent ? */
+export function isTrackedLivePosition(poolAddress: string, positionPubkey: string): boolean {
+  if (!hasTable("live_positions")) return false;
+  return Boolean(
+    getDb()
+      .prepare(`SELECT 1 FROM live_positions WHERE status='OPEN' AND pool_address=? AND position_pubkey=? LIMIT 1`)
+      .get(poolAddress, positionPubkey)
+  );
+}
+
+/** Demande déjà en cours (PENDING ou PROCESSING) pour cette position, sinon null. */
+export function activeCloseRequestId(positionPubkey: string): number | null {
+  const row = getDb()
+    .prepare(`SELECT id FROM close_requests WHERE position_pubkey=? AND status IN ('PENDING','PROCESSING') LIMIT 1`)
+    .get(positionPubkey) as { id: number } | undefined;
+  return row?.id ?? null;
+}
+
+export function countActiveCloseRequests(): number {
+  return (
+    getDb().prepare(`SELECT COUNT(*) n FROM close_requests WHERE status IN ('PENDING','PROCESSING')`).get() as { n: number }
+  ).n;
+}
+
 export function createCloseRequest(
   poolAddress: string,
   positionPubkey: string,

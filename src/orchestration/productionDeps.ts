@@ -44,7 +44,8 @@ export function createClients(): ProductionClients {
 export function createProductionDeps(c: ProductionClients): OrchestratorDeps {
   const wallet = loadWallet();
   const executor = wallet ? new RealExecutor(wallet) : null;
-  const manager = wallet ? new LivePositionManager(wallet, c.oracle) : null;
+  // Réutilise le suivi live des clients (démon) au lieu d'ouvrir une connexion par scan
+  const manager = c.manager ?? (wallet ? new LivePositionManager(wallet, c.oracle) : null);
   if (manager) c.manager = manager;
 
   return {
@@ -132,6 +133,7 @@ export function createProductionDeps(c: ProductionClients): OrchestratorDeps {
         features: d.features,
         rationale: d.rationale,
       }),
+    amendDecision: (id, decision, note) => c.journal.amendDecision(id, decision, note),
     executePosition: async (proposal, journalId) => {
       if (!executor || !wallet) return dryRunExecute(proposal, journalId);
 
@@ -197,7 +199,7 @@ export function createProductionDeps(c: ProductionClients): OrchestratorDeps {
         });
       }
 
-      return { ok: res.ok, note: res.note };
+      return { ok: res.ok, note: res.note, mode: res.mode === "DRY_RUN" ? "DRY_RUN" : "LIVE" };
     },
   };
 }

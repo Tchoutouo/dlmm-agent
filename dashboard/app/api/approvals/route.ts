@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 
+/** Réponse d'erreur interne : le détail reste dans les logs serveur. */
+function internalError(err: unknown) {
+  console.error("[api/approvals]", err);
+  return NextResponse.json({ error: "Erreur interne" }, { status: 500 });
+}
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -24,15 +30,20 @@ export function GET() {
     }));
     return NextResponse.json({ pending });
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    return internalError(err);
   }
 }
 
 /** Résout une proposition : { id, approved }. */
 export async function POST(req: Request) {
   try {
-    const body = (await req.json()) as { id?: unknown; approved?: unknown };
-    if (typeof body.id !== "number" || typeof body.approved !== "boolean") {
+    let body: { id?: unknown; approved?: unknown };
+    try {
+      body = (await req.json()) as { id?: unknown; approved?: unknown };
+    } catch {
+      return NextResponse.json({ error: "Corps JSON invalide" }, { status: 400 });
+    }
+    if (!Number.isInteger(body.id) || typeof body.approved !== "boolean") {
       return NextResponse.json({ error: "id (number) et approved (boolean) requis" }, { status: 400 });
     }
     const changes = getDb()
@@ -43,6 +54,6 @@ export async function POST(req: Request) {
     }
     return NextResponse.json({ ok: true });
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    return internalError(err);
   }
 }

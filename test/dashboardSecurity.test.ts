@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { checkBasicAuth, guardRequest, hostnameOf, safeEqual, type RequestFacts } from "../dashboard/lib/security.js";
+import {
+  checkBasicAuth,
+  guardRequest,
+  hostnameOf,
+  safeEqual,
+  validateCloseRequest,
+  type RequestFacts,
+} from "../dashboard/lib/security.js";
 
 const basic = (user: string, pass: string) => "Basic " + btoa(`${user}:${pass}`);
 const req = (o: Partial<RequestFacts> = {}): RequestFacts => ({
@@ -71,5 +78,21 @@ describe("dashboard — utilitaires", () => {
     expect(safeEqual("abc", "abc")).toBe(true);
     expect(safeEqual("abc", "abd")).toBe(false);
     expect(safeEqual("abc", "abcd")).toBe(false);
+  });
+});
+
+describe("validateCloseRequest (faille M1)", () => {
+  const pk = "G6eJgyVdupYx23TD3auEr9PFtv2q98jk3pbg5nP58rdh";
+  it("accepte des clés base58 et nettoie le nom", () => {
+    const r = validateCloseRequest({ poolAddress: pk, positionPubkey: pk, poolName: "  RUSH-SOL\u0007 " });
+    expect(r).toEqual({ ok: true, value: { poolAddress: pk, positionPubkey: pk, poolName: "RUSH-SOL" } });
+  });
+  it("refuse une adresse invalide ou du HTML", () => {
+    expect(validateCloseRequest({ poolAddress: "pas-une-adresse", positionPubkey: pk, poolName: "x" }).ok).toBe(false);
+    expect(validateCloseRequest({ poolAddress: pk, positionPubkey: "<script>alert(1)</script>", poolName: "x" }).ok).toBe(false);
+  });
+  it("refuse un corps absent ou un nom vide", () => {
+    expect(validateCloseRequest(null).ok).toBe(false);
+    expect(validateCloseRequest({ poolAddress: pk, positionPubkey: pk, poolName: "\u0000 " }).ok).toBe(false);
   });
 });

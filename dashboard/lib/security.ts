@@ -88,3 +88,34 @@ export function guardRequest(f: RequestFacts, password: string | undefined): Gua
 
   return { ok: true };
 }
+
+/** Clé publique Solana en base58 (32 octets → 32 à 44 caractères). */
+const BASE58_PUBKEY = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+export interface CloseRequestInput {
+  poolAddress: string;
+  positionPubkey: string;
+  poolName: string;
+}
+
+/**
+ * Valide le corps d'une demande de clôture : adresses base58 valides, nom
+ * court sans caractères de contrôle. Renvoie la demande nettoyée ou le motif.
+ */
+export function validateCloseRequest(
+  body: unknown
+): { ok: true; value: CloseRequestInput } | { ok: false; error: string } {
+  if (!body || typeof body !== "object") return { ok: false, error: "Corps JSON attendu" };
+  const b = body as Record<string, unknown>;
+  const { poolAddress, positionPubkey, poolName } = b;
+  if (typeof poolAddress !== "string" || !BASE58_PUBKEY.test(poolAddress)) {
+    return { ok: false, error: "poolAddress invalide (clé publique base58 attendue)" };
+  }
+  if (typeof positionPubkey !== "string" || !BASE58_PUBKEY.test(positionPubkey)) {
+    return { ok: false, error: "positionPubkey invalide (clé publique base58 attendue)" };
+  }
+  if (typeof poolName !== "string") return { ok: false, error: "poolName requis" };
+  const name = poolName.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 64);
+  if (!name) return { ok: false, error: "poolName requis" };
+  return { ok: true, value: { poolAddress, positionPubkey, poolName: name } };
+}

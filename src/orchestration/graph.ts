@@ -142,7 +142,8 @@ export function buildOrchestrator(deps: OrchestratorDeps) {
         volatilityAnnual: a.volatility.sigmaAnnual,
         binStep: c.pool.binStep,
         bindingCap: r.bindingCap,
-        hedged: r.hedge.recommended,
+        hedged: false, // aucune couverture n'est exécutée
+        hedgeRecommended: r.hedge.recommended,
         expectedNetApr: a.riskAdjustedNetApr,
       },
     };
@@ -153,8 +154,15 @@ export function buildOrchestrator(deps: OrchestratorDeps) {
       typeof journalId === "number" ? journalId : undefined
     );
     record.note = res.note; // pour le résumé en mémoire uniquement
+    // Une entrée simulée ou ratée ne reste pas « ENTER » au journal
+    const finalDecision = !res.ok ? "FAILED" : res.mode === "DRY_RUN" ? "DRY_RUN" : "ENTER";
+    if (finalDecision !== "ENTER") {
+      record.decision = finalDecision;
+      if (typeof journalId === "number") deps.amendDecision?.(journalId, finalDecision, res.note);
+    }
     // Rafraîchir le snapshot + compteur pour que le prochain candidat voie
-    // le capital réel et le nombre de positions déjà ouvertes ce cycle.
+    // le capital réel et le nombre de positions déjà ouvertes ce cycle
+    // (une simulation compte : le dry-run reproduit le plafond du live).
     const opened = res.ok ? 1 : 0;
     return {
       decisions: [record],

@@ -10,6 +10,7 @@ import BN from "bn.js";
 import type { LoadedWallet } from "./wallet.js";
 import { detectRpcNetwork, executionGate, type DetectedNetwork, type ExecutionMode } from "./safetyGate.js";
 import { binRangeForPrices, depositValueUsd, priceDeviation, tokenXForUsd } from "./executionMath.js";
+import { withPriorityFee } from "./priorityFee.js";
 import { config } from "../config.js";
 
 export interface OpenInput {
@@ -92,9 +93,11 @@ export class RealExecutor {
       return invalid(`Prix USD du quote invalide : ${input.quoteUsdPrice} — abandon de l'ouverture`);
     }
 
-    // DRY_RUN : aucun appel on-chain (les pools de l'API mainnet n'existent pas
-    // sur devnet), mais les montants sont calculés et affichés pour contrôle.
-    if (gate.mode === "DRY_RUN") {
+    // DRY_RUN sur un RPC mainnet : tout est construit à partir de la chaîne puis
+    // SIMULÉ, jamais envoyé (voir plus bas). Sur devnet, les pools de l'API mainnet
+    // n'existent pas : montants calculés hors chaîne, et la note le dit.
+    const simulateOnly = gate.mode === "DRY_RUN";
+    if (simulateOnly && this.rpcNetwork !== "mainnet-beta") {
       const xUi = tokenXForUsd(input.sizeUsd / 2, input.currentPrice, input.quoteUsdPrice);
       const range =
         input.rangeLow && input.rangeHigh
@@ -104,19 +107,25 @@ export class RealExecutor {
         mode: "DRY_RUN",
         ok: true,
         note:
-          `Simulation (NON envoyée) — ${input.poolAddress.slice(0, 8)}… ${range}, Spot, ` +
+          `Simulation hors chaîne (NON vérifiée on-chain : RPC ${this.rpcNetwork}) — ` +
+          `${input.poolAddress.slice(0, 8)}… ${range}, Spot, ` +
           `taille $${input.sizeUsd.toFixed(0)} ≈ ${xUi.toPrecision(4)} X + l'équivalent en Y`,
         positionPubkey: Keypair.generate().publicKey.toBase58(),
       };
     }
 
-    // LIVE : lectures on-chain + envoi de la transaction réelle.
+    // LIVE (ou simulation mainnet) : lectures on-chain + construction de la transaction.
     const { keypair, connection } = this.wallet;
+    // En simulation, un solde insuffisant est relevé mais n'arrête pas la construction :
+    // le but est de valider prix, bins et montants même avec un wallet vide.
+    const balanceWarnings: string[] = [];
 
     // Vérification préalable : SOL suffisant pour rent des comptes Meteora + gas (≥0.20 SOL)
     const solLamports = await connection.getBalance(keypair.publicKey);
     if (solLamports < 0.20 * 1e9) {
-      return invalid(`Solde SOL insuffisant : ${(solLamports / 1e9).toFixed(4)} SOL (min 0.20 — rent bin-arrays + dépôt pool)`);
+      const msg = `Solde SOL insuffisant : ${(solLamports / 1e9).toFixed(4)} SOL (min 0.20 — rent bin-arrays + dépôt pool)`;
+      if (!simulateOnly) return invalid(msg);
+      balanceWarnings.push(msg);
     }
 
     const pool = new PublicKey(input.poolAddress);
@@ -180,25 +189,41 @@ export class RealExecutor {
       await this.assertTokenBalance(connection, keypair.publicKey, mintY, totalYAmount, "tokenY");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return { mode: "LIVE", ok: false, note: msg };
+      if (!simulateOnly) return { mode: "LIVE", ok: false, note: msg };
+      balanceWarnings.push(msg);
     }
 
     const newPosition = Keypair.generate();
-    const tx = (await dlmmPool.initializePositionAndAddLiquidityByStrategy({
-      positionPubKey: newPosition.publicKey,
-      user: keypair.publicKey,
-      totalXAmount,
-      totalYAmount,
-      strategy: { minBinId, maxBinId, strategyType },
-    })) as Transaction;
+    const tx = withPriorityFee(
+      (await dlmmPool.initializePositionAndAddLiquidityByStrategy({
+        positionPubKey: newPosition.publicKey,
+        user: keypair.publicKey,
+        totalXAmount,
+        totalYAmount,
+        strategy: { minBinId, maxBinId, strategyType },
+      })) as Transaction,
+      config.PRIORITY_FEE_MICROLAMPORTS
+    );
+    const summary = `bins [${minBinId}, ${maxBinId}], dépôt $${depositUsd.toFixed(2)}`;
+
+    if (simulateOnly) {
+      const sim = await connection.simulateTransaction(tx, [keypair, newPosition]);
+      const warn = balanceWarnings.length > 0 ? ` | ${balanceWarnings.join(" | ")}` : "";
+      return sim.value.err
+        ? {
+            mode: "DRY_RUN",
+            ok: false,
+            note: `Simulation on-chain en échec (NON envoyée) — ${summary} : ${JSON.stringify(sim.value.err).slice(0, 80)}${warn}`,
+          }
+        : { mode: "DRY_RUN", ok: true, note: `Simulation on-chain réussie (NON envoyée) — ${summary}${warn}` };
+    }
 
     const txHash = await sendAndConfirmTransaction(connection, tx, [keypair, newPosition]);
     return {
       mode: "LIVE",
       ok: true,
       note:
-        `Position ouverte (${gate.reason}) — ${newPosition.publicKey.toBase58()} ` +
-        `bins [${minBinId}, ${maxBinId}], dépôt $${depositUsd.toFixed(2)}`,
+        `Position ouverte (${gate.reason}) — ${newPosition.publicKey.toBase58()} ${summary}`,
       positionPubkey: newPosition.publicKey.toBase58(),
       txHash,
     };
@@ -234,9 +259,26 @@ export class RealExecutor {
       return { mode: "DRY_RUN", ok: true, note: `Clôture construite (NON envoyée) — ${positionPubkey}` };
     }
 
+    // Une clôture peut nécessiter plusieurs transactions : si l'une échoue, la
+    // position est partiellement retirée. On le signale sans lever d'exception ;
+    // le tick suivant relit la position on-chain et termine la clôture.
     const txs = Array.isArray(tx) ? tx : [tx];
     let last = "";
-    for (const t of txs) last = await sendAndConfirmTransaction(connection, t, [keypair]);
+    for (const [i, t] of txs.entries()) {
+      try {
+        last = await sendAndConfirmTransaction(connection, withPriorityFee(t, config.PRIORITY_FEE_MICROLAMPORTS), [keypair]);
+      } catch (err) {
+        const msg = (err instanceof Error ? err.message.split("\n")[0] : String(err)) ?? "";
+        return {
+          mode: "LIVE",
+          ok: false,
+          note:
+            (i === 0 ? "Clôture échouée" : `Clôture partielle : ${i}/${txs.length} transactions confirmées`) +
+            ` — nouvel essai au prochain tick (${msg.slice(0, 80)})`,
+          txHash: last || undefined,
+        };
+      }
+    }
     return { mode: "LIVE", ok: true, note: `Position fermée — ${positionPubkey}`, txHash: last };
   }
 
@@ -269,7 +311,7 @@ export class RealExecutor {
     // Le SDK peut retourner une Transaction ou Transaction[]
     const tx = (Array.isArray(raw) ? raw[0] : raw) as import("@solana/web3.js").Transaction;
     if (!tx) return { mode: "LIVE", ok: false, note: "Aucune fee à réclamer" };
-    const txHash = await sendAndConfirmTransaction(connection, tx, [keypair]);
+    const txHash = await sendAndConfirmTransaction(connection, withPriorityFee(tx, config.PRIORITY_FEE_MICROLAMPORTS), [keypair]);
     return { mode: "LIVE", ok: true, note: `Fees réclamées`, txHash };
   }
 

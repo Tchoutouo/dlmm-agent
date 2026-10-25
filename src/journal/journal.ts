@@ -88,6 +88,14 @@ export class TradeJournal {
   }
 
   /** Complète une entrée avec son issue réelle (boucle de feedback). */
+  /**
+   * Corrige la décision d'une entrée après exécution : une entrée simulée
+   * (DRY_RUN) ou en échec (FAILED) ne doit pas rester comptée comme ENTER.
+   */
+  amendDecision(id: number, decision: DecisionType, note: string): void {
+    this.db.prepare(`UPDATE journal SET decision = ?, outcome_notes = ? WHERE id = ?`).run(decision, note, id);
+  }
+
   recordOutcome(
     id: number,
     outcome: {

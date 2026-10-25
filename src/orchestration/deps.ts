@@ -20,6 +20,13 @@ export interface Proposal {
 }
 
 /** Décision finale tracée pour le résumé de run et le journal. */
+/** Résultat d'une exécution d'entrée. */
+export interface ExecutionOutcome {
+  ok: boolean;
+  note: string;
+  mode?: "LIVE" | "DRY_RUN" | "PAPER";
+}
+
 export interface DecisionRecord {
   poolName: string;
   poolAddress: string;
@@ -54,8 +61,13 @@ export interface OrchestratorDeps {
   getForwardVol?(poolAddress: string, candles: Candle[]): Promise<number | null>;
   /** Persiste la décision ; renvoie l'id du journal si applicable. */
   recordDecision(record: DecisionRecord): number | void;
-  /** Agent 3 (exécution). `journalId` permet de lier l'issue à la décision. */
-  executePosition(proposal: Proposal, journalId?: number): Promise<{ ok: boolean; note: string }>;
+  /**
+   * Agent 3 (exécution). `journalId` permet de lier l'issue à la décision.
+   * `mode` : DRY_RUN si rien n'a été réellement ouvert (simulation).
+   */
+  executePosition(proposal: Proposal, journalId?: number): Promise<ExecutionOutcome>;
+  /** Corrige au journal une entrée simulée ou en échec (voir TradeJournal.amendDecision). */
+  amendDecision?(journalId: number, decision: DecisionType, note: string): void;
 }
 
 /**
@@ -65,11 +77,11 @@ export interface OrchestratorDeps {
 export async function dryRunExecute(
   proposal: Proposal,
   _journalId?: number
-): Promise<{ ok: boolean; note: string }> {
+): Promise<ExecutionOutcome> {
   const { candidate, risk, analysis } = proposal;
   const note =
     `DRY_RUN : ouverture simulée de $${risk.recommendedSizeUsd.toFixed(0)} ` +
     `dans ${candidate.pool.name} ` +
     `range [${analysis.suggestedRange.priceLow.toFixed(4)}, ${analysis.suggestedRange.priceHigh.toFixed(4)}]`;
-  return { ok: true, note };
+  return { ok: true, note, mode: "DRY_RUN" };
 }

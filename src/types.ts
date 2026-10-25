@@ -121,7 +121,11 @@ export interface ScoredOpportunity {
 }
 
 /** Décision d'entrée/sortie/rééquilibrage tracée dans le journal. */
-export type DecisionType = "ENTER" | "EXIT" | "REBALANCE" | "HOLD" | "SKIP" | "HALT";
+/**
+ * ENTER = position réellement ouverte (paper ou live). DRY_RUN = entrée simulée,
+ * rien d'ouvert. FAILED = entrée approuvée mais dont l'exécution a échoué.
+ */
+export type DecisionType = "ENTER" | "EXIT" | "REBALANCE" | "HOLD" | "SKIP" | "HALT" | "DRY_RUN" | "FAILED";
 
 /** Bougie OHLCV renvoyée par dlmm.datapi.meteora.ag. */
 export interface Candle {
@@ -189,7 +193,10 @@ export interface DecisionFeatures {
   volatilityAnnual?: number;
   binStep?: number;
   bindingCap?: string;
+  /** Couverture réellement exécutée (aucune ne l'est aujourd'hui). */
   hedged?: boolean;
+  /** Couverture recommandée par l'agent de risque (non exécutée). */
+  hedgeRecommended?: boolean;
   expectedNetApr?: number;
   /** Forme de la position ouverte : spot (deux côtés) ou sol_bidask (un côté). */
   shape?: "spot" | "sol_bidask";
