@@ -9,6 +9,8 @@ export interface SimulatedOutcome {
   wentOutOfRange: boolean;
   fractionInRange: number;
   holdingDays: number;
+  /** Motif de sortie : fin de la fenêtre, take-profit ou stop-loss. */
+  exitReason: "horizon" | "take_profit" | "stop_loss";
 }
 
 export interface SimulateInput {
@@ -21,6 +23,10 @@ export interface SimulateInput {
   forwardCandles: Candle[];
   /** Secondes par bougie (pour déduire la durée de détention). */
   candleSeconds: number;
+  /** Sortie dès que le PnL (valeur + fees) atteint +X % de la taille. 0/absent = désactivé. */
+  takeProfitPct?: number;
+  /** Sortie dès que le PnL tombe à −X % de la taille. 0/absent = désactivé. */
+  stopLossPct?: number;
 }
 
 /**
@@ -38,6 +44,8 @@ export interface SimulateInput {
  */
 export function simulatePosition(input: SimulateInput): SimulatedOutcome {
   const { entryPrice, sizeUsd, range, feeAprAnnual, forwardCandles, candleSeconds } = input;
+  const tp = input.takeProfitPct ?? 0;
+  const sl = input.stopLossPct ?? 0;
 
   if (forwardCandles.length === 0) {
     return {
@@ -48,25 +56,41 @@ export function simulatePosition(input: SimulateInput): SimulatedOutcome {
       wentOutOfRange: false,
       fractionInRange: 0,
       holdingDays: 0,
+      exitReason: "horizon",
     };
   }
 
+  // Fees gagnées par bougie passée dans le range
+  const feePerCandleUsd = sizeUsd * feeAprAnnual * (candleSeconds / 86_400 / 365);
+
   let inRange = 0;
   let wentOutOfRange = false;
+  let held = 0;
+  let exitReason: SimulatedOutcome["exitReason"] = "horizon";
+  let exitPrice = entryPrice;
+  let valueChangeUsd = 0;
+
+  // Marquage à chaque clôture ; TP/SL évalués sur les clôtures (pas en intra-bougie)
   for (const c of forwardCandles) {
-    const within = c.close >= range.priceLow && c.close <= range.priceHigh;
-    if (within) inRange++;
+    held++;
+    if (c.close >= range.priceLow && c.close <= range.priceHigh) inRange++;
     else wentOutOfRange = true;
+
+    exitPrice = c.close;
+    valueChangeUsd = sizeUsd * (positionValueRatio(entryPrice, exitPrice, range.priceLow, range.priceHigh) - 1);
+    const pnlPct = sizeUsd > 0 ? ((valueChangeUsd + inRange * feePerCandleUsd) / sizeUsd) * 100 : 0;
+
+    if (tp > 0 && pnlPct >= tp) {
+      exitReason = "take_profit";
+      break;
+    }
+    if (sl > 0 && pnlPct <= -sl) {
+      exitReason = "stop_loss";
+      break;
+    }
   }
-  const fractionInRange = inRange / forwardCandles.length;
 
-  const holdingDays = (forwardCandles.length * candleSeconds) / 86_400;
-  const feeForWindow = feeAprAnnual * (holdingDays / 365);
-  const feesEarnedUsd = sizeUsd * feeForWindow * fractionInRange;
-
-  const exitPrice = forwardCandles[forwardCandles.length - 1]!.close;
-  const valueRatio = positionValueRatio(entryPrice, exitPrice, range.priceLow, range.priceHigh);
-  const valueChangeUsd = sizeUsd * (valueRatio - 1);
+  const feesEarnedUsd = inRange * feePerCandleUsd;
 
   return {
     exitPrice,
@@ -74,7 +98,8 @@ export function simulatePosition(input: SimulateInput): SimulatedOutcome {
     valueChangeUsd,
     realizedPnlUsd: valueChangeUsd + feesEarnedUsd,
     wentOutOfRange,
-    fractionInRange,
-    holdingDays,
+    fractionInRange: inRange / held,
+    holdingDays: (held * candleSeconds) / 86_400,
+    exitReason,
   };
 }

@@ -213,6 +213,8 @@ export interface JournalEntry {
   wentOutOfRange?: boolean;
   /** Durée de détention en jours (issue). */
   holdingDays?: number;
+  /** Motif de sortie (backtest) : fin de fenêtre, take-profit ou stop-loss. */
+  exitReason?: "horizon" | "take_profit" | "stop_loss";
   outcomeNotes?: string;
 }
 
@@ -320,6 +322,8 @@ export interface PerformanceMetrics {
   avgPnlUsd: number | null;
   totalFeesUsd: number;
   avgRealizedReturn: number | null; // PnL / taille, moyen
+  /** Gains bruts / pertes brutes. null si aucune perte (non défini). */
+  profitFactor: number | null;
 }
 
 /** Qualité de prédiction : APR net prédit vs rendement réalisé. */

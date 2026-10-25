@@ -24,6 +24,10 @@ export interface BacktestOptions {
   params?: RiskParams;
   /** Prix USD du quote (1 si stable). */
   quoteUsdPrice?: number;
+  /** Sortie anticipée à +X % de PnL (0/absent = détention jusqu'à la fin de la fenêtre). */
+  takeProfitPct?: number;
+  /** Sortie anticipée à −X % de PnL (0/absent = pas de stop). */
+  stopLossPct?: number;
 }
 
 export interface BacktestSummary {
@@ -71,7 +75,11 @@ export function runBacktest(pool: Pool, candles: Candle[], options: BacktestOpti
   let halted = false;
   let steps = 0;
 
-  for (let i = lookback; i + window <= candles.length; i += window) {
+  // Pas suivant : fin de la fenêtre, ou dès la sortie anticipée (TP/SL) pour ne pas
+  // laisser le capital inactif jusqu'à la fin de la fenêtre.
+  let advance = window;
+  for (let i = lookback; i + window <= candles.length; i += advance) {
+    advance = window;
     steps++;
     const trailing = candles.slice(i - lookback, i);
     const now = candles[i]!;
@@ -126,9 +134,12 @@ export function runBacktest(pool: Pool, candles: Candle[], options: BacktestOpti
         feeAprAnnual: opportunity.estimatedFeeApr,
         forwardCandles: forward,
         candleSeconds,
+        takeProfitPct: options.takeProfitPct,
+        stopLossPct: options.stopLossPct,
       });
       nav += sim.realizedPnlUsd;
       entered++;
+      advance = Math.max(1, Math.round((sim.holdingDays * 86_400) / candleSeconds));
 
       const e = baseEntry(poolNow, "ENTER", opportunity, analysis, risk, ts);
       e.sizeUsd = risk.recommendedSizeUsd;
@@ -136,6 +147,7 @@ export function runBacktest(pool: Pool, candles: Candle[], options: BacktestOpti
       e.feesCollectedUsd = sim.feesEarnedUsd;
       e.wentOutOfRange = sim.wentOutOfRange;
       e.holdingDays = sim.holdingDays;
+      e.exitReason = sim.exitReason;
       entries.push(e);
     } else {
       skipped++;

@@ -57,6 +57,42 @@ describe("simulatePosition", () => {
     expect(out.fractionInRange).toBe(0);
     expect(out.feesEarnedUsd).toBe(0);
   });
+
+  const dumpPath = path([100, 99, 97, 94, 90, 85, 80]);
+  const base = {
+    entryPrice: 100,
+    sizeUsd: 1000,
+    range: { priceLow: 80, priceHigh: 120 },
+    feeAprAnnual: 0.1,
+    candleSeconds: 3600,
+  };
+
+  it("sort au stop-loss dès que le PnL franchit −X % et coupe la perte", () => {
+    const held = simulatePosition({ ...base, forwardCandles: dumpPath });
+    const stopped = simulatePosition({ ...base, forwardCandles: dumpPath, stopLossPct: 4 });
+    expect(stopped.exitReason).toBe("stop_loss");
+    expect(stopped.realizedPnlUsd / 1000).toBeLessThanOrEqual(-0.04);
+    expect(stopped.realizedPnlUsd).toBeGreaterThan(held.realizedPnlUsd);
+    expect(stopped.holdingDays).toBeLessThan(held.holdingDays);
+  });
+
+  it("sort au take-profit quand les fees portent le PnL au-dessus du seuil", () => {
+    const out = simulatePosition({
+      ...base,
+      feeAprAnnual: 50, // fees très élevées : ≈ +0,57 %/h
+      forwardCandles: path([100, 100, 100, 100, 100, 100]),
+      takeProfitPct: 1,
+    });
+    expect(out.exitReason).toBe("take_profit");
+    expect(out.realizedPnlUsd / 1000).toBeGreaterThanOrEqual(0.01);
+    expect(out.holdingDays * 24).toBeLessThan(6);
+  });
+
+  it("sans TP/SL : détention jusqu'au bout (motif horizon)", () => {
+    const out = simulatePosition({ ...base, forwardCandles: dumpPath });
+    expect(out.exitReason).toBe("horizon");
+    expect(out.holdingDays * 24).toBeCloseTo(7, 6);
+  });
 });
 
 function pool(): Pool {
@@ -129,5 +165,14 @@ describe("runBacktest", () => {
     // soit le disjoncteur a sauté, soit tout a été vété/perdu — dans tous les cas
     // le système ne doit pas avoir « gagné » sur un krach
     expect(res.summary.finalNavUsd).toBeLessThanOrEqual(1000);
+  });
+
+  it("après une sortie anticipée, réentre sans attendre la fin de la fenêtre", () => {
+    const opts = { timeframe: "1h" as const, lookbackCandles: 48, windowCandles: 24, initialCashUsd: 1000 };
+    const plain = runBacktest(pool(), calmHistory(240), opts);
+    const withTp = runBacktest(pool(), calmHistory(240), { ...opts, takeProfitPct: 0.01 });
+    const tpExits = withTp.entries.filter((e) => e.exitReason === "take_profit");
+    expect(tpExits.length).toBeGreaterThan(0);
+    expect(withTp.summary.steps).toBeGreaterThan(plain.summary.steps);
   });
 });

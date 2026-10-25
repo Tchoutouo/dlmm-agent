@@ -52,6 +52,12 @@ describe("computeMetrics", () => {
     expect(m.wins).toBe(2);
     expect(m.winRate).toBeCloseTo(2 / 3, 5);
     expect(m.totalPnlUsd).toBeCloseTo(12, 5);
+    expect(m.profitFactor).toBeCloseTo(16 / 4, 5); // gains bruts 16 / pertes brutes 4
+  });
+
+  it("profit factor null quand il n'y a aucune perte", () => {
+    const m = computeMetrics([enterWithOutcome("calm", 10), enterWithOutcome("calm", 3)]);
+    expect(m.profitFactor).toBeNull();
   });
 
   it("renvoie winRate null sans issue", () => {
