@@ -3,6 +3,7 @@ import { DataApiClient } from "./data/dataApiClient.js";
 import { PriceOracle, STABLE_MINTS } from "./data/priceOracle.js";
 import { scanOpportunities } from "./analytics/opportunityScanner.js";
 import { runBacktest } from "./backtest/backtester.js";
+import { loadQuoteUsdHistory, type QuoteUsdAt } from "./backtest/quoteHistory.js";
 import { computeMetrics } from "./learning/performance.js";
 import type { Candle, JournalEntry, Pool } from "./types.js";
 
@@ -36,14 +37,17 @@ async function main() {
   const oracle = new PriceOracle();
 
   const args = process.argv.slice(2);
+  const universe = await market.getAllPairs();
   const pools: Pool[] = args.length > 0
     ? await Promise.all(args.map((a) => market.getPair(a)))
-    : scanOpportunities(await market.getAllPairs(), { topN: DEFAULT_POOLS, minStableN: 0 }).map((o) => o.pool);
+    : scanOpportunities(universe, { topN: DEFAULT_POOLS, minStableN: 0 }).map((o) => o.pool);
 
   console.log(`▶ Comparaison SL/TP sur ${pools.length} pool(s), ~30 jours de bougies 1h, positions de 24h max\n`);
 
   const quotePrices = new Map<string, number>(); // évite de re-solliciter Jupiter (rate limit)
-  const histories: Array<{ pool: Pool; candles: Candle[]; quoteUsdPrice: number }> = [];
+  // Historique USD des quotes (SOL via la pool SOL/stable la plus profonde) : un par mint
+  const quoteHistories = new Map<string, QuoteUsdAt | null>();
+  const histories: Array<{ pool: Pool; candles: Candle[]; quoteUsdPrice: number; quoteUsdAt: QuoteUsdAt | null }> = [];
   for (const pool of pools) {
     try {
       const candles = await data.getOhlcv(pool.address, "1h", 720);
@@ -51,8 +55,12 @@ async function main() {
         quotePrices.set(pool.mintY, await oracle.getUsdPrice(pool.mintY));
       }
       const quoteUsdPrice = STABLE_MINTS.has(pool.mintY) ? 1 : quotePrices.get(pool.mintY)!;
-      histories.push({ pool, candles, quoteUsdPrice });
-      console.log(`  ${pool.name.padEnd(16)} ${candles.length} bougies`);
+      if (!quoteHistories.has(pool.mintY)) {
+        quoteHistories.set(pool.mintY, await loadQuoteUsdHistory(pool.mintY, universe, data, 720));
+      }
+      histories.push({ pool, candles, quoteUsdPrice, quoteUsdAt: quoteHistories.get(pool.mintY)! });
+      const usd = quoteHistories.get(pool.mintY) ? "valorisé en USD" : "en unités de quote";
+      console.log(`  ${pool.name.padEnd(16)} ${candles.length} bougies, ${usd}`);
     } catch (err) {
       console.log(`  ${pool.name.padEnd(16)} ignorée : ${(err as Error).message}`);
     }
@@ -67,6 +75,7 @@ async function main() {
       const res = runBacktest(h.pool, h.candles, {
         timeframe: "1h",
         quoteUsdPrice: h.quoteUsdPrice,
+        quoteUsdAt: h.quoteUsdAt ?? undefined,
         stopLossPct: sl,
         takeProfitPct: tp,
       });

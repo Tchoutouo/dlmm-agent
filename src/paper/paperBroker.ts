@@ -62,6 +62,9 @@ export class PaperBroker {
     if (!cols.includes("bin_step")) {
       this.db.exec(`ALTER TABLE paper_positions ADD COLUMN bin_step INTEGER NOT NULL DEFAULT 0`);
     }
+    if (!cols.includes("quote_usd_entry")) {
+      this.db.exec(`ALTER TABLE paper_positions ADD COLUMN quote_usd_entry REAL NOT NULL DEFAULT 0`);
+    }
     if (!this.db.prepare(`SELECT 1 FROM paper_meta WHERE key='cash'`).get()) {
       const set = this.db.prepare(`INSERT INTO paper_meta(key,value) VALUES(?,?)`);
       set.run("cash", initialCashUsd);
@@ -97,6 +100,8 @@ export class PaperBroker {
     nowSec: number;
     shape?: PositionShape;
     binStep?: number;
+    /** Prix USD du quote à l'ouverture (valorisation USD des pools non stables). */
+    quoteUsdEntry?: number;
   }): number {
     const cash = this.meta("cash");
     if (p.sizeUsd > cash) throw new Error("Cash papier insuffisant");
@@ -104,13 +109,13 @@ export class PaperBroker {
       .prepare(
         `INSERT INTO paper_positions
          (journal_id,pool_address,pool_name,mint_x,mint_y,size_usd,value_usd,
-          entry_price,range_low,range_high,fee_apr,opened_at_sec,last_mark_sec,shape,bin_step)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+          entry_price,range_low,range_high,fee_apr,opened_at_sec,last_mark_sec,shape,bin_step,quote_usd_entry)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       )
       .run(
         p.journalId ?? null, p.poolAddress, p.poolName, p.mintX, p.mintY,
         p.sizeUsd, p.sizeUsd, p.entryPrice, p.rangeLow, p.rangeHigh,
-        p.feeAprAnnual, p.nowSec, p.nowSec, p.shape ?? "spot", p.binStep ?? 0
+        p.feeAprAnnual, p.nowSec, p.nowSec, p.shape ?? "spot", p.binStep ?? 0, p.quoteUsdEntry ?? 0
       );
     this.setMeta("cash", cash - p.sizeUsd);
     return Number(info.lastInsertRowid);
@@ -125,11 +130,15 @@ export class PaperBroker {
   }
 
   /** Marque toutes les positions ouvertes au prix courant fourni. */
-  markAll(priceOf: (poolAddress: string) => number | undefined, nowSec: number): void {
+  markAll(
+    priceOf: (poolAddress: string) => number | undefined,
+    nowSec: number,
+    quoteUsdOf?: (mint: string) => number | undefined
+  ): void {
     for (const pos of this.listOpen()) {
       const price = priceOf(pos.poolAddress);
       if (price === undefined) continue;
-      const mark = markPaperPosition(pos, price, nowSec);
+      const mark = markPaperPosition(pos, price, nowSec, quoteUsdOf?.(pos.mintY));
       this.db
         .prepare(
           `UPDATE paper_positions
@@ -154,14 +163,15 @@ export class PaperBroker {
     priceOf: (poolAddress: string) => number | undefined,
     nowSec: number,
     holdingDays: number,
-    journal: TradeJournal
+    journal: TradeJournal,
+    quoteUsdOf?: (mint: string) => number | undefined
   ): number {
     let closed = 0;
     for (const pos of this.listOpen()) {
       if (!isDue(pos, nowSec, holdingDays)) continue;
       const price = priceOf(pos.poolAddress);
       if (price === undefined) continue;
-      const mark = markPaperPosition(pos, price, nowSec);
+      const mark = markPaperPosition(pos, price, nowSec, quoteUsdOf?.(pos.mintY));
       const outcome = paperCloseOutcome(pos, mark, nowSec);
 
       this.db
@@ -242,5 +252,6 @@ function rowToPosition(r: Record<string, unknown>): PaperPosition {
     lastMarkAtSec: r.last_mark_sec as number,
     shape: (r.shape as PositionShape | undefined) ?? "spot",
     binStep: (r.bin_step as number | undefined) || undefined,
+    quoteUsdEntry: (r.quote_usd_entry as number | undefined) || undefined,
   };
 }

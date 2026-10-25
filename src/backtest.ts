@@ -2,6 +2,7 @@ import { MeteoraClient } from "./data/meteoraClient.js";
 import { DataApiClient } from "./data/dataApiClient.js";
 import { PriceOracle, STABLE_MINTS } from "./data/priceOracle.js";
 import { runBacktest } from "./backtest/backtester.js";
+import { loadQuoteUsdHistory } from "./backtest/quoteHistory.js";
 import { analyzeJournal, formatReport } from "./learning/learningAgent.js";
 
 /**
@@ -34,7 +35,14 @@ async function main() {
     ? 1
     : await oracle.getUsdPrice(pool.mintY);
 
-  const { entries, summary } = runBacktest(pool, candles, { timeframe: "1h", quoteUsdPrice });
+  const quoteUsdAt = await loadQuoteUsdHistory(pool.mintY, await market.getAllPairs(), data, 720);
+  if (!quoteUsdAt) console.log("ℹ️  Pas d'historique USD pour le quote : valorisation en unités de quote\n");
+
+  const { entries, summary } = runBacktest(pool, candles, {
+    timeframe: "1h",
+    quoteUsdPrice,
+    quoteUsdAt: quoteUsdAt ?? undefined,
+  });
 
   console.log("── Résumé du backtest ──");
   console.log(`Pas : ${summary.steps} | entrées : ${summary.entered} | skips : ${summary.skipped}`);

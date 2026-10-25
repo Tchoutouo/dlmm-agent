@@ -42,6 +42,7 @@ export function createPaperDeps(broker: PaperBroker, c: ProductionClients): Orch
     executePosition: async (proposal, journalId) => {
       const { candidate, analysis, risk } = proposal;
       const plan = planPosition(config.PAPER_STRATEGY, candidate.pool, analysis.suggestedRange);
+      const quoteUsdEntry = await c.oracle.getUsdPrice(candidate.pool.mintY).catch(() => undefined);
       broker.open({
         journalId,
         poolAddress: candidate.pool.address,
@@ -56,6 +57,7 @@ export function createPaperDeps(broker: PaperBroker, c: ProductionClients): Orch
         nowSec: Math.floor(Date.now() / 1000),
         shape: plan.shape,
         binStep: candidate.pool.binStep,
+        quoteUsdEntry,
       });
       return {
         ok: true,
@@ -85,8 +87,11 @@ export async function manageLivePositions(broker: PaperBroker, c: ProductionClie
     }
   }
   const priceOf = (addr: string) => priceByAddr[addr];
-  broker.markAll(priceOf, nowSec);
-  const closed = broker.closeDue(priceOf, nowSec, config.PAPER_HOLDING_DAYS, c.journal);
+  // Prix USD des quotes (un seul appel groupé) : valorisation USD des pools TOKEN/SOL
+  const quoteUsd = await c.oracle.getUsdPrices([...new Set(open.map((p) => p.mintY))]).catch(() => ({}));
+  const quoteUsdOf = (mint: string) => (quoteUsd as Record<string, number>)[mint];
+  broker.markAll(priceOf, nowSec, quoteUsdOf);
+  const closed = broker.closeDue(priceOf, nowSec, config.PAPER_HOLDING_DAYS, c.journal, quoteUsdOf);
   console.log(`Positions vivantes : ${open.length} marquées, ${closed} clôturées`);
 }
 
@@ -155,6 +160,7 @@ export async function paperTickSupervised(
       // La file ne stocke pas la forme : un range qui s'arrête au prix d'entrée est une bid-ask d'un côté
       shape: a.rangeHigh <= a.entryPrice ? "sol_bidask" : "spot",
       binStep: a.binStep,
+      quoteUsdEntry: await c.oracle.getUsdPrice(a.mintY).catch(() => undefined),
     });
     queue.markExecuted(a.id);
     opened++;

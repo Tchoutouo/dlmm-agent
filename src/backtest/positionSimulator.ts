@@ -35,6 +35,13 @@ export interface SimulateInput {
    * sinon, repli sur l'APR constant `feeAprAnnual`.
    */
   feeShareOfVolume?: number;
+  /**
+   * Prix USD du quote, à l'entrée puis à chaque bougie forward (même longueur).
+   * La valeur LP, calculée en unités de quote, est convertie en USD par leur
+   * rapport. Absent = quote supposé stable.
+   */
+  quoteUsdEntry?: number;
+  quoteUsdPath?: Array<number | undefined>;
   /** Forme de la position (défaut spot). */
   shape?: PositionShape;
   /** Bin step de la pool (requis pour sol_bidask). */
@@ -53,8 +60,8 @@ export interface SimulateInput {
  * serré capte une plus grande part des fees), ce qui est le bon biais pour un
  * outil dont le but est de NE PAS perdre : mieux vaut un backtest prudent.
  *
- * Variation de valeur LP via positionValueRatio (capital réel, pas IL vs HODL).
- * Hypothèse : token Y = quote stable (valorisation en USD).
+ * Variation de valeur LP via positionValueRatio (capital réel, pas IL vs HODL),
+ * en unités de quote, convertie en USD si le chemin de prix du quote est fourni.
  */
 export function simulatePosition(input: SimulateInput): SimulatedOutcome {
   const { entryPrice, sizeUsd, range, feeAprAnnual, forwardCandles, candleSeconds } = input;
@@ -94,7 +101,13 @@ export function simulatePosition(input: SimulateInput): SimulatedOutcome {
   let valueChangeUsd = 0;
 
   // Marquage à chaque clôture ; TP/SL évalués sur les clôtures (pas en intra-bougie)
+  const quoteFactor = (k: number) => {
+    const q = input.quoteUsdPath?.[k];
+    return input.quoteUsdEntry && q ? q / input.quoteUsdEntry : 1;
+  };
+
   for (const c of forwardCandles) {
+    const k = held;
     held++;
     const within = c.close >= range.priceLow && c.close <= range.priceHigh;
     if (within) inRange++;
@@ -102,7 +115,7 @@ export function simulatePosition(input: SimulateInput): SimulatedOutcome {
     feesEarnedUsd += feeWeight(c.close, within) * feeOfCandle(c);
 
     exitPrice = c.close;
-    valueChangeUsd = sizeUsd * (valueRatio(exitPrice) - 1);
+    valueChangeUsd = sizeUsd * (valueRatio(exitPrice) * quoteFactor(k) - 1);
     const pnlPct = sizeUsd > 0 ? ((valueChangeUsd + feesEarnedUsd) / sizeUsd) * 100 : 0;
 
     if (tp > 0 && pnlPct >= tp) {

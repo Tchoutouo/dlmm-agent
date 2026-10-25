@@ -14,6 +14,7 @@ import { buildQuoteProfile } from "../analytics/quoteRisk.js";
 import { assessRisk, riskParamsFromConfig } from "../risk/riskAgent.js";
 import { simulatePosition } from "./positionSimulator.js";
 import { planPosition, type PositionShape } from "../analytics/positionPlan.js";
+import type { QuoteUsdAt } from "./quoteHistory.js";
 
 export interface BacktestOptions {
   timeframe?: Timeframe;
@@ -31,6 +32,8 @@ export interface BacktestOptions {
   stopLossPct?: number;
   /** Forme des positions simulées (défaut spot). */
   strategy?: PositionShape;
+  /** Historique du prix USD du quote (valorisation USD des pools TOKEN/SOL). */
+  quoteUsdAt?: QuoteUsdAt;
 }
 
 export interface BacktestSummary {
@@ -137,6 +140,8 @@ export function runBacktest(pool: Pool, candles: Candle[], options: BacktestOpti
         range: { priceLow: plan.rangeLow, priceHigh: plan.rangeHigh },
         shape: plan.shape,
         binStep: pool.binStep,
+        quoteUsdEntry: options.quoteUsdAt?.(now.timestamp),
+        quoteUsdPath: options.quoteUsdAt ? forward.map((c) => options.quoteUsdAt!(c.timestamp)) : undefined,
         feeAprAnnual: opportunity.estimatedFeeApr,
         feeShareOfVolume: feeShareOfVolume(pool),
         forwardCandles: forward,
