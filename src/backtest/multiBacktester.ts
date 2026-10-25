@@ -9,7 +9,7 @@ import type {
   Timeframe,
 } from "../types.js";
 import { TIMEFRAME_SECONDS } from "../data/dataApiClient.js";
-import { feeAprProxy } from "../analytics/feeApr.js";
+import { feeShareOfVolume, trailingFeeApr } from "../analytics/feeApr.js";
 import { deepAnalyze } from "../analytics/deepAnalysis.js";
 import { buildQuoteProfile } from "../analytics/quoteRisk.js";
 import { assessRisk, riskParamsFromConfig } from "../risk/riskAgent.js";
@@ -126,7 +126,7 @@ export function runMultiBacktest(
         pool: poolNow,
         score: 0.5,
         components: { yieldScore: 0.5, sustainabilityScore: 0.5, depthScore: 0.5 },
-        estimatedFeeApr: feeAprProxy(poolNow),
+        estimatedFeeApr: trailingFeeApr(poolNow, trailing, candleSeconds),
         reasons: [],
       };
       try {
@@ -168,6 +168,7 @@ export function runMultiBacktest(
           sizeUsd: risk.recommendedSizeUsd,
           range: a.analysis.suggestedRange,
           feeAprAnnual: a.opportunity.estimatedFeeApr,
+          feeShareOfVolume: feeShareOfVolume(a.poolNow),
           forwardCandles: forward,
           candleSeconds,
         });

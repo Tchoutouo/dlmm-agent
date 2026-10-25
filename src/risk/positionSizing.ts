@@ -29,17 +29,16 @@ export function sizePosition(
   range: { priceLow: number; priceHigh: number },
   snapshot: PortfolioSnapshot,
   params: RiskParams,
-  quoteShock = 0
+  quoteShock = 0,
+  /** Valeur (ratio du dépôt) au bas du range si la forme n'est pas spot (ex. bid-ask). */
+  stressValueRatio?: number
 ): SizingResult {
   const nav = snapshot.navUsd;
 
   // Perte de stress en USD : prix du token au bas du range × chute du quote/USD
-  const ratioTokenQuote = positionValueRatio(
-    pool.currentPrice,
-    range.priceLow,
-    range.priceLow,
-    range.priceHigh
-  );
+  const ratioTokenQuote =
+    stressValueRatio ??
+    positionValueRatio(pool.currentPrice, range.priceLow, range.priceLow, range.priceHigh);
   const usdRatioAtStress = ratioTokenQuote * (1 + quoteShock);
   const stressLossPct = Math.min(0, usdRatioAtStress - 1); // ≤ 0
 

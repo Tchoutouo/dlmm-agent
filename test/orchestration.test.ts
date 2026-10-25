@@ -164,3 +164,24 @@ describe("orchestrateur — mode supervisé (human-in-the-loop)", () => {
     expect(executed.length).toBe(0);
   });
 });
+
+describe("orchestrateur — position prévue par planPosition", () => {
+  it("journalise la forme et le range prévus, et les transmet à l'exécution", async () => {
+    const { deps, executed } = makeDeps({ candidates: [candidate("SOL-USDC", 0.6)] });
+    deps.planPosition = (c) => ({ shape: "sol_bidask", rangeLow: c.pool.currentPrice * 0.85, rangeHigh: c.pool.currentPrice });
+    const out = await buildOrchestrator(deps).compile().invoke({ mode: "autonomous" });
+    const enter = out.decisions.find((d) => d.decision === "ENTER")!;
+    expect(enter.features?.shape).toBe("sol_bidask");
+    expect(enter.rangeHigh).toBe(100);
+    expect(enter.rangeLow).toBeCloseTo(85, 10);
+    expect(executed[0]!.plan?.shape).toBe("sol_bidask");
+  });
+
+  it("sans planPosition : forme spot et range suggéré", async () => {
+    const { deps } = makeDeps({ candidates: [candidate("SOL-USDC", 0.6)] });
+    const out = await buildOrchestrator(deps).compile().invoke({ mode: "autonomous" });
+    const enter = out.decisions.find((d) => d.decision === "ENTER")!;
+    expect(enter.features?.shape).toBe("spot");
+    expect(enter.rangeHigh).toBeGreaterThan(100);
+  });
+});

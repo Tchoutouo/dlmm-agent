@@ -10,6 +10,7 @@ import { PaperBroker } from "./paperBroker.js";
 import { ApprovalQueue } from "./approvalQueue.js";
 import { predictForwardVol } from "../ml/volatilityClient.js";
 import { config } from "../config.js";
+import { planPosition } from "../analytics/positionPlan.js";
 
 /**
  * Deps de l'orchestrateur en mode PAPER : le snapshot et l'exécution viennent du
@@ -23,6 +24,7 @@ export function createPaperDeps(broker: PaperBroker, c: ProductionClients): Orch
     getQuoteUsdPrice: (mint) => c.oracle.getUsdPrice(mint),
     getForwardVol: async (addr, candles) => (await predictForwardVol(candles, "1h", addr))?.dailyVol ?? null,
     getSnapshot: () => broker.snapshot(),
+    planPosition: (cand, analysis) => planPosition(config.PAPER_STRATEGY, cand.pool, analysis.suggestedRange),
     recordDecision: (d) =>
       c.journal.record({
         timestamp: new Date().toISOString(),
@@ -40,6 +42,8 @@ export function createPaperDeps(broker: PaperBroker, c: ProductionClients): Orch
       }),
     executePosition: async (proposal, journalId) => {
       const { candidate, analysis, risk } = proposal;
+      const plan = proposal.plan ?? planPosition(config.PAPER_STRATEGY, candidate.pool, analysis.suggestedRange);
+      const quoteUsdEntry = await c.oracle.getUsdPrice(candidate.pool.mintY).catch(() => undefined);
       broker.open({
         journalId,
         poolAddress: candidate.pool.address,
@@ -48,12 +52,18 @@ export function createPaperDeps(broker: PaperBroker, c: ProductionClients): Orch
         mintY: candidate.pool.mintY,
         sizeUsd: risk.recommendedSizeUsd,
         entryPrice: candidate.pool.currentPrice,
-        rangeLow: analysis.suggestedRange.priceLow,
-        rangeHigh: analysis.suggestedRange.priceHigh,
+        rangeLow: plan.rangeLow,
+        rangeHigh: plan.rangeHigh,
         feeAprAnnual: feeAprProxy(candidate.pool),
         nowSec: Math.floor(Date.now() / 1000),
+        shape: plan.shape,
+        binStep: candidate.pool.binStep,
+        quoteUsdEntry,
       });
-      return { ok: true, note: `PAPER : position simulée ouverte ($${risk.recommendedSizeUsd.toFixed(0)})` };
+      return {
+        ok: true,
+        note: `PAPER : position simulée ouverte ($${risk.recommendedSizeUsd.toFixed(0)}, ${plan.shape})`,
+      };
     },
   };
 }
@@ -78,8 +88,11 @@ export async function manageLivePositions(broker: PaperBroker, c: ProductionClie
     }
   }
   const priceOf = (addr: string) => priceByAddr[addr];
-  broker.markAll(priceOf, nowSec);
-  const closed = broker.closeDue(priceOf, nowSec, config.PAPER_HOLDING_DAYS, c.journal);
+  // Prix USD des quotes (un seul appel groupé) : valorisation USD des pools TOKEN/SOL
+  const quoteUsd = await c.oracle.getUsdPrices([...new Set(open.map((p) => p.mintY))]).catch(() => ({}));
+  const quoteUsdOf = (mint: string) => (quoteUsd as Record<string, number>)[mint];
+  broker.markAll(priceOf, nowSec, quoteUsdOf);
+  const closed = broker.closeDue(priceOf, nowSec, config.PAPER_HOLDING_DAYS, c.journal, quoteUsdOf);
   console.log(`Positions vivantes : ${open.length} marquées, ${closed} clôturées`);
 }
 
@@ -145,6 +158,10 @@ export async function paperTickSupervised(
       rangeHigh: a.rangeHigh,
       feeAprAnnual: a.feeAprAnnual,
       nowSec,
+      // La file ne stocke pas la forme : un range qui s'arrête au prix d'entrée est une bid-ask d'un côté
+      shape: a.rangeHigh <= a.entryPrice ? "sol_bidask" : "spot",
+      binStep: a.binStep,
+      quoteUsdEntry: await c.oracle.getUsdPrice(a.mintY).catch(() => undefined),
     });
     queue.markExecuted(a.id);
     opened++;
@@ -165,7 +182,8 @@ export async function paperTickSupervised(
       const candles = await c.data.getOhlcv(cand.pool.address, "1h", 168);
       const analysis = deepAnalyze(cand, candles);
       const quoteProfile = buildQuoteProfile(cand.pool.mintY, await c.oracle.getUsdPrice(cand.pool.mintY));
-      const risk = assessRisk(cand, analysis, snapshot, undefined, quoteProfile);
+      const plan = planPosition(config.PAPER_STRATEGY, cand.pool, analysis.suggestedRange);
+      const risk = assessRisk(cand, analysis, snapshot, undefined, quoteProfile, plan);
       if (risk.verdict === "APPROVE" || risk.verdict === "APPROVE_REDUCED") {
         queue.enqueue({
           poolAddress: cand.pool.address,
@@ -173,8 +191,8 @@ export async function paperTickSupervised(
           mintX: cand.pool.mintX,
           mintY: cand.pool.mintY,
           entryPrice: cand.pool.currentPrice,
-          rangeLow: analysis.suggestedRange.priceLow,
-          rangeHigh: analysis.suggestedRange.priceHigh,
+          rangeLow: plan.rangeLow,
+          rangeHigh: plan.rangeHigh,
           sizeUsd: risk.recommendedSizeUsd,
           feeAprAnnual: feeAprProxy(cand.pool),
           verdict: risk.verdict,

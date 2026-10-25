@@ -17,6 +17,7 @@ import { buildQuoteProfile } from "../analytics/quoteRisk.js";
 import { assessRisk } from "../risk/riskAgent.js";
 import type { OrchestratorDeps, DecisionRecord } from "./deps.js";
 import { config } from "../config.js";
+import type { PositionPlan } from "../analytics/positionPlan.js";
 
 export type OrchestratorMode = "autonomous" | "supervised";
 
@@ -32,6 +33,7 @@ const GraphState = Annotation.Root({
   analysis: Annotation<DeepAnalysis | null>({ reducer: (_, r) => r, default: () => null }),
   quoteProfile: Annotation<QuoteProfile | null>({ reducer: (_, r) => r, default: () => null }),
   risk: Annotation<RiskAssessment | null>({ reducer: (_, r) => r, default: () => null }),
+  plan: Annotation<PositionPlan | null>({ reducer: (_, r) => r, default: () => null }),
   approved: Annotation<boolean>({ reducer: (_, r) => r, default: () => false }),
   halted: Annotation<boolean>({ reducer: (_, r) => r, default: () => false }),
   positionsOpened: Annotation<number>({ reducer: (_, r) => r, default: () => 0 }),
@@ -83,14 +85,16 @@ export function buildOrchestrator(deps: OrchestratorDeps) {
 
   const risk = (s: State) => {
     const c = current(s);
+    const plan = deps.planPosition ? deps.planPosition(c, s.analysis!) : null;
     const assessment = assessRisk(
       c,
       s.analysis!,
       s.snapshot!,
       undefined,
-      s.quoteProfile ?? undefined
+      s.quoteProfile ?? undefined,
+      plan ?? undefined
     );
-    return { risk: assessment };
+    return { risk: assessment, plan };
   };
 
   const supervise = (s: State) => {
@@ -129,10 +133,11 @@ export function buildOrchestrator(deps: OrchestratorDeps) {
       verdict: r.verdict,
       sizeUsd: r.recommendedSizeUsd,
       rationale: [...a.rationale, ...r.reasons].join(" | "),
-      rangeLow: a.suggestedRange.priceLow,
-      rangeHigh: a.suggestedRange.priceHigh,
+      rangeLow: s.plan?.rangeLow ?? a.suggestedRange.priceLow,
+      rangeHigh: s.plan?.rangeHigh ?? a.suggestedRange.priceHigh,
       estimatedIlPct: a.ilAt1Sigma,
       features: {
+        shape: s.plan?.shape ?? "spot",
         feeRegime: a.feeRegime.label,
         volatilityAnnual: a.volatility.sigmaAnnual,
         binStep: c.pool.binStep,
@@ -144,7 +149,7 @@ export function buildOrchestrator(deps: OrchestratorDeps) {
     // Journaliser d'abord pour obtenir l'id, puis exécuter en le liant à l'issue.
     const journalId = deps.recordDecision(record);
     const res = await deps.executePosition(
-      { candidate: c, analysis: a, risk: r },
+      { candidate: c, analysis: a, risk: r, plan: s.plan ?? undefined },
       typeof journalId === "number" ? journalId : undefined
     );
     record.note = res.note; // pour le résumé en mémoire uniquement

@@ -60,6 +60,48 @@ describe("MeteoraClient — cas nominaux", () => {
     expect(pool.isVerified).toBe(false);
   });
 
+  it("le token de base est le côté non-quote, même quand SOL est en token_x", async () => {
+    const SOL = "So11111111111111111111111111111111111111112";
+    const solFirst = {
+      ...POOL_STUB,
+      token_x: { address: SOL, is_verified: true, market_cap: 59e9 },
+      token_y: { address: "bonkMint", is_verified: true, market_cap: 2_500_000 },
+      volume: { "24h": "500000", "4h": "90000" },
+    };
+    mockFetch([okJson(solFirst)]);
+    const pool = await new MeteoraClient("https://fake.api").getPair("pool1");
+    expect(pool.baseMint).toBe("bonkMint");
+    expect(pool.baseMarketCapUsd).toBe(2_500_000);
+    expect(pool.volume4h).toBe(90_000);
+  });
+
+  it("feesInQuote : mode OnlyY (1) et token Y SOL/stable uniquement", async () => {
+    const SOL = "So11111111111111111111111111111111111111112";
+    const cfg = (mode: number) => ({ bin_step: 25, base_fee_pct: 0.25, collect_fee_mode: mode });
+    const memeSol = (mode: number, y = SOL) => ({
+      ...POOL_STUB,
+      token_x: { address: "meme", is_verified: true },
+      token_y: { address: y, is_verified: true },
+      pool_config: cfg(mode),
+    });
+    mockFetch([okJson(memeSol(1)), okJson(memeSol(0)), okJson(memeSol(1, "otherMeme"))]);
+    const client = new MeteoraClient("https://fake.api");
+    expect((await client.getPair("a")).feesInQuote).toBe(true);
+    expect((await client.getPair("b")).feesInQuote).toBe(false); // InputOnly
+    expect((await client.getPair("c")).feesInQuote).toBe(false); // Y n'est pas un quote
+  });
+
+  it("SOL-USDC et USDC-SOL ont le même token de base (SOL)", async () => {
+    const SOL = "So11111111111111111111111111111111111111112";
+    const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+    const sol = { address: SOL, is_verified: true };
+    const usdc = { address: USDC, is_verified: true };
+    mockFetch([okJson({ ...POOL_STUB, token_x: sol, token_y: usdc }), okJson({ ...POOL_STUB, token_x: usdc, token_y: sol })]);
+    const client = new MeteoraClient("https://fake.api");
+    expect((await client.getPair("a")).baseMint).toBe(SOL);
+    expect((await client.getPair("b")).baseMint).toBe(SOL);
+  });
+
   it("getPair() retourne une pool normalisée", async () => {
     mockFetch([okJson(POOL_STUB)]);
     const client = new MeteoraClient("https://fake.api");

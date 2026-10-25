@@ -1,4 +1,6 @@
 import { positionValueRatio } from "../analytics/impermanentLoss.js";
+import { bidAskFeeMultiplier, bidAskLayout, bidAskValueRatio } from "../analytics/bidAsk.js";
+import type { PositionShape } from "../analytics/positionPlan.js";
 
 const YEAR_SECONDS = 365 * 24 * 3600;
 
@@ -19,6 +21,12 @@ export interface PaperPosition {
   everOutOfRange: boolean;
   openedAtSec: number;
   lastMarkAtSec: number;
+  /** Forme de la position (absent = spot, positions antérieures). */
+  shape?: PositionShape;
+  /** Bin step de la pool (requis pour la forme sol_bidask). */
+  binStep?: number;
+  /** Prix USD du quote (token Y) à l'ouverture. Absent/0 = quote supposé stable. */
+  quoteUsdEntry?: number;
 }
 
 export interface PaperMark {
@@ -42,26 +50,38 @@ export interface PaperOutcome {
  * on n'accumule des fees QUE lorsque le prix est dans le range.
  *
  *   feeAccruedNow = sizeUsd × feeAprAnnual × (Δt / an)   si in-range, sinon 0
- *   lpValueUsd    = sizeUsd × positionValueRatio(entry → courant)
+ *   lpValueUsd    = sizeUsd × positionValueRatio(entry → courant) × quoteUsd(t) / quoteUsd(entrée)
  *
- * Hypothèse : token Y = quote stable (valorisation USD). Pour TOKEN/SOL, la
- * valeur USD devrait être ajustée par le prix de SOL (cohérent avec l'agent de
- * risque ; raffinement de valorisation possible).
+ * La valeur LP est calculée en unités de quote (token Y) puis convertie en USD
+ * par la variation du prix du quote : une pool TOKEN/SOL perd de la valeur quand
+ * SOL baisse, même si le ratio TOKEN/SOL ne bouge pas. Sans prix du quote
+ * (stable, ou prix indisponible), le quote est supposé valoir son prix d'entrée.
+ * Les fees, estimées en USD (fees/TVL), ne sont pas réajustées.
  */
 export function markPaperPosition(
   pos: PaperPosition,
   currentPrice: number,
-  nowSec: number
+  nowSec: number,
+  quoteUsdNow?: number
 ): PaperMark {
   const elapsed = Math.max(0, nowSec - pos.lastMarkAtSec);
   const inRange = currentPrice >= pos.rangeLow && currentPrice <= pos.rangeHigh;
-  const feeAccruedNow = inRange
-    ? pos.sizeUsd * pos.feeAprAnnual * (elapsed / YEAR_SECONDS)
-    : 0;
-  const accruedFeesUsd = pos.accruedFeesUsd + feeAccruedNow;
 
-  const ratio = positionValueRatio(pos.entryPrice, currentPrice, pos.rangeLow, pos.rangeHigh);
-  const lpValueUsd = pos.sizeUsd * ratio;
+  // Bid-ask d'un côté : valeur par bins, fees selon la liquidité du bin actif
+  let feeMultiplier = inRange ? 1 : 0;
+  let ratio: number;
+  if (pos.shape === "sol_bidask" && pos.binStep) {
+    const layout = bidAskLayout(pos.rangeLow, pos.rangeHigh, pos.binStep);
+    feeMultiplier = bidAskFeeMultiplier(currentPrice, layout);
+    ratio = bidAskValueRatio(currentPrice, layout);
+  } else {
+    ratio = positionValueRatio(pos.entryPrice, currentPrice, pos.rangeLow, pos.rangeHigh);
+  }
+
+  const feeAccruedNow = pos.sizeUsd * pos.feeAprAnnual * (elapsed / YEAR_SECONDS) * feeMultiplier;
+  const accruedFeesUsd = pos.accruedFeesUsd + feeAccruedNow;
+  const quoteFactor = pos.quoteUsdEntry && quoteUsdNow ? quoteUsdNow / pos.quoteUsdEntry : 1;
+  const lpValueUsd = pos.sizeUsd * ratio * quoteFactor;
 
   return {
     lpValueUsd,

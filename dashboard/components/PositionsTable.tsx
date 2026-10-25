@@ -47,15 +47,32 @@ export default function PositionsTable({ positions }: Props) {
                 style={outMin !== null ? { background: "rgba(255,80,80,0.05)" } : {}}
               >
                 <td>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    {p.poolName}
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    <span style={{ whiteSpace: "nowrap" }}>{p.poolName}</span>
                     {p.isLive && (
-                      <span className="tag accent" style={{ fontSize: 9 }}>LIVE</span>
+                      <span className="tag accent" style={{ fontSize: 9, whiteSpace: "nowrap" }}>LIVE</span>
+                    )}
+                    {p.shape === "sol_bidask" ? (
+                      <span
+                        className="tag hold"
+                        style={{ fontSize: 9, whiteSpace: "nowrap" }}
+                        title="Bid-ask d'un seul côté : liquidité en SOL/stable sous le prix d'entrée"
+                      >
+                        BID-ASK
+                      </span>
+                    ) : (
+                      <span
+                        className="tag skip"
+                        style={{ fontSize: 9, whiteSpace: "nowrap" }}
+                        title="Spot : liquidité des deux côtés, centrée sur le prix"
+                      >
+                        SPOT
+                      </span>
                     )}
                     {outMin !== null && (
                       <span
                         className="tag neg"
-                        style={{ fontSize: 9 }}
+                        style={{ fontSize: 9, whiteSpace: "nowrap" }}
                         title={`Hors range depuis ${outMin} min`}
                       >
                         OUT {outMin}m

@@ -13,6 +13,8 @@ export function computeMetrics(entries: JournalEntry[]): PerformanceMetrics {
   const totalPnlUsd = realized.reduce((s, e) => s + (e.realizedPnlUsd ?? 0), 0);
   const totalFeesUsd = realized.reduce((s, e) => s + (e.feesCollectedUsd ?? 0), 0);
   const wins = realized.filter((e) => (e.realizedPnlUsd ?? 0) > 0).length;
+  const grossWin = realized.reduce((s, e) => s + Math.max(0, e.realizedPnlUsd ?? 0), 0);
+  const grossLoss = realized.reduce((s, e) => s + Math.max(0, -(e.realizedPnlUsd ?? 0)), 0);
 
   const returns = realized
     .filter((e) => e.sizeUsd && e.sizeUsd > 0)
@@ -28,6 +30,7 @@ export function computeMetrics(entries: JournalEntry[]): PerformanceMetrics {
     avgPnlUsd: realized.length > 0 ? totalPnlUsd / realized.length : null,
     totalFeesUsd,
     avgRealizedReturn: returns.length > 0 ? mean(returns) : null,
+    profitFactor: grossLoss > 0 ? grossWin / grossLoss : null,
   };
 }
 

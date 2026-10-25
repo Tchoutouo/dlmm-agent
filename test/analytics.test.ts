@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { concentratedIl, suggestRange } from "../src/analytics/impermanentLoss.js";
-import { scanOpportunities, DEFAULT_WEIGHTS } from "../src/analytics/opportunityScanner.js";
+import { scanOpportunities, DEFAULT_WEIGHTS, isStablePool, findTokenCopies } from "../src/analytics/opportunityScanner.js";
 import { feeAprProxy } from "../src/analytics/feeApr.js";
 import type { Pool } from "../src/types.js";
 
@@ -87,8 +87,8 @@ function mockPool(p: Partial<Pool>): Pool {
   return {
     address: p.address ?? "addr",
     name: p.name ?? "X-Y",
-    mintX: "x",
-    mintY: "y",
+    mintX: p.mintX ?? "x",
+    mintY: p.mintY ?? "y",
     binStep: 20,
     baseFeePct: 0.2,
     liquidityUsd: p.liquidityUsd ?? 100_000,
@@ -100,6 +100,11 @@ function mockPool(p: Partial<Pool>): Pool {
     feeTvl1h: 0,
     isVerified: p.isVerified ?? true,
     isBlacklisted: p.isBlacklisted ?? false,
+    baseMint: p.baseMint,
+    baseMarketCapUsd: p.baseMarketCapUsd,
+    volume4h: p.volume4h,
+    feesInQuote: p.feesInQuote,
+    baseSymbol: p.baseSymbol,
   };
 }
 
@@ -118,7 +123,7 @@ describe("feeAprProxy", () => {
 describe("scanOpportunities", () => {
   it("filtre les pools blacklistées et illiquides", () => {
     const pools = [
-      mockPool({ name: "GOOD", liquidityUsd: 500_000, volume24h: 200_000, feeTvl24h: 0.002 }),
+      mockPool({ name: "GOOD", liquidityUsd: 500_000, volume24h: 600_000, feeTvl24h: 0.002 }),
       mockPool({ name: "BLACKLISTED", isBlacklisted: true }),
       mockPool({ name: "ILLIQUID", liquidityUsd: 100 }),
       mockPool({ name: "DEAD", volume24h: 0 }),
@@ -152,5 +157,119 @@ describe("scanOpportunities", () => {
       expect(o.score).toBeLessThanOrEqual(1);
       expect(o.reasons.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("scanOpportunities — filtres de sélection DLMM", () => {
+  const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+  const USDT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+  const names = (pools: Pool[], opts = {}) =>
+    scanOpportunities(pools, { topN: 10, minStableN: 0, ...opts }).map((o) => o.pool.name);
+
+  it("écarte les pools où le volume 24h est inférieur à la TVL", () => {
+    const pools = [
+      mockPool({ name: "ACTIVE", liquidityUsd: 100_000, volume24h: 250_000 }),
+      mockPool({ name: "SLEEPY", liquidityUsd: 100_000, volume24h: 60_000 }),
+    ];
+    expect(names(pools, { minVolumeTvlRatio: 1 })).toEqual(["ACTIVE"]);
+  });
+
+  it("écarte les tokens sous la market cap minimale (inconnue = conservée)", () => {
+    const pools = [
+      mockPool({ name: "BIG", volume24h: 200_000, baseMarketCapUsd: 5_000_000 }),
+      mockPool({ name: "TINY", volume24h: 200_000, baseMarketCapUsd: 108_000 }),
+      mockPool({ name: "UNKNOWN", volume24h: 200_000 }),
+    ];
+    const res = names(pools, { minMarketCapUsd: 1_000_000 });
+    expect(res).toContain("BIG");
+    expect(res).toContain("UNKNOWN");
+    expect(res).not.toContain("TINY");
+  });
+
+  it("écarte les pools dont le volume récent s'effondre", () => {
+    const pools = [
+      // 4h × 6 = 120k vs 120k sur 24h → activité stable
+      mockPool({ name: "STEADY", volume24h: 120_000, volume4h: 20_000 }),
+      // cas réel BOYCOTT : 8k sur 4h × 6 = 48k vs 117k → ratio 0,41
+      mockPool({ name: "FADING", volume24h: 117_000, volume4h: 8_000 }),
+    ];
+    expect(names(pools, { minRecentVolumeRatio: 0.5 })).toEqual(["STEADY"]);
+  });
+
+  it("ne garde qu'une pool par token : celle à la plus grosse TVL", () => {
+    const pools = [
+      mockPool({ name: "MEME-SOL bin80", baseMint: "meme", liquidityUsd: 15_000, volume24h: 210_000 }),
+      mockPool({ name: "MEME-SOL bin125", baseMint: "meme", liquidityUsd: 84, volume24h: 10_000 }),
+      mockPool({ name: "OTHER-SOL", baseMint: "other", liquidityUsd: 50_000, volume24h: 100_000 }),
+    ];
+    const res = names(pools, { minLiquidityUsd: 0, minVolume24h: 0, onePoolPerToken: true });
+    expect(res).toContain("MEME-SOL bin80");
+    expect(res).not.toContain("MEME-SOL bin125");
+    expect(res).toContain("OTHER-SOL");
+  });
+
+  it("reconnaît USDC-USDT comme paire stable (mint USDT officiel)", () => {
+    expect(isStablePool(mockPool({ mintX: USDC, mintY: USDT }))).toBe(true);
+  });
+
+  it("n'applique pas la market cap aux paires stables", () => {
+    const pools = [mockPool({ name: "USDC-USDT", mintX: USDC, mintY: USDT, volume24h: 200_000, baseMarketCapUsd: 0 })];
+    expect(names(pools, { minMarketCapUsd: 1_000_000 })).toEqual(["USDC-USDT"]);
+  });
+});
+
+describe("scanOpportunities — fees versées en quote", () => {
+  it("à métriques égales, classe en tête la pool qui verse ses fees en SOL/stable", () => {
+    const pools = [
+      mockPool({ name: "MIXED-FEES", volume24h: 200_000 }),
+      mockPool({ name: "QUOTE-FEES", volume24h: 200_000, feesInQuote: true }),
+    ];
+    const res = scanOpportunities(pools, { topN: 2, minStableN: 0, quoteFeesBonus: 0.1 });
+    expect(res[0]!.pool.name).toBe("QUOTE-FEES");
+    expect(res[0]!.score).toBeLessThanOrEqual(1);
+    expect(res[0]!.reasons.some((r) => r.includes("SOL/stable"))).toBe(true);
+  });
+
+  it("sans bonus, l'ordre ne dépend pas du mode de fees", () => {
+    const pools = [
+      mockPool({ name: "A", volume24h: 200_000 }),
+      mockPool({ name: "B", volume24h: 200_000, feesInQuote: true }),
+    ];
+    const res = scanOpportunities(pools, { topN: 2, minStableN: 0, quoteFeesBonus: 0 });
+    expect(res[0]!.score).toBe(res[1]!.score);
+  });
+});
+
+describe("scanOpportunities — copies de tokens", () => {
+  const real = { baseSymbol: "PUMP", baseMint: "pumpReal", baseMarketCapUsd: 1_984_000_000 };
+  const copy = { baseSymbol: "pump", baseMint: "pumpCopy", baseMarketCapUsd: 3_000_000 };
+
+  it("findTokenCopies : même symbole (casse ignorée), plus petite market cap = copie", () => {
+    const copies = findTokenCopies([
+      mockPool({ name: "PUMP-SOL", ...real }),
+      mockPool({ name: "PUMP-SOL copie", ...copy }),
+      mockPool({ name: "OTHER-SOL", baseSymbol: "OTHER", baseMint: "other", baseMarketCapUsd: 5e6 }),
+    ]);
+    expect([...copies]).toEqual(["pumpCopy"]);
+  });
+
+  it("écarte la copie même si elle passe tous les autres filtres", () => {
+    const pools = [
+      mockPool({ name: "PUMP-SOL", volume24h: 200_000, ...real }),
+      mockPool({ name: "PUMP-SOL copie", volume24h: 300_000, ...copy }),
+    ];
+    const names = (exclude: boolean) =>
+      scanOpportunities(pools, { topN: 10, minStableN: 0, onePoolPerToken: false, excludeTokenCopies: exclude })
+        .map((o) => o.pool.name);
+    expect(names(true)).toEqual(["PUMP-SOL"]);
+    expect(names(false)).toContain("PUMP-SOL copie");
+  });
+
+  it("sans market cap connue, aucun verdict de copie", () => {
+    const copies = findTokenCopies([
+      mockPool({ baseSymbol: "X", baseMint: "a", baseMarketCapUsd: 1e6 }),
+      mockPool({ baseSymbol: "X", baseMint: "b" }),
+    ]);
+    expect(copies.size).toBe(0);
   });
 });

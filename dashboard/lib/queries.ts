@@ -30,6 +30,8 @@ export interface OpenPosition {
   isLive: boolean;
   outOfRangeSinceSec: number | null;
   openedAtSec: number;
+  /** Forme : spot (deux côtés, centrée) ou sol_bidask (un côté en SOL/stable, sous le prix). */
+  shape: "spot" | "sol_bidask";
 }
 
 export interface CloseRequest {
@@ -54,22 +56,32 @@ function readMeta(table: string, key: string): number {
   return r?.value ?? 0;
 }
 
+/**
+ * Portefeuille simulé affiché : le paper trading s'il existe, sinon le
+ * portefeuille du scan (dry-run). Cash, pic et positions viennent toujours de
+ * la MÊME source — les mélanger fausse la NAV et le drawdown.
+ */
+function simulatedSource(): { meta: string; positions: string } | null {
+  if (hasTable("paper_meta")) return { meta: "paper_meta", positions: "paper_positions" };
+  if (hasTable("portfolio_meta")) return { meta: "portfolio_meta", positions: "positions" };
+  return null;
+}
+
 // ── Portfolio ─────────────────────────────────────────────────────────────────
 
 export function getPortfolio(): Portfolio {
-  const positions = getOpenPositions();
+  // live_meta (positions réelles on-chain) prime sur le portefeuille simulé.
+  // Les positions comptées dans la NAV sont celles du portefeuille dont on lit le cash.
+  const hasLive = hasTable("live_meta");
+  const metaTable = hasLive ? "live_meta" : simulatedSource()?.meta;
+  const positions = getOpenPositions().filter((p) => p.isLive === hasLive);
   const deployedUsd = positions.reduce((s, p) => s + p.valueUsd, 0);
 
-  // live_meta (positions réelles on-chain) prime sur les tables paper
-  const hasLive = hasTable("live_meta");
-  const cashUsd = hasLive
-    ? readMeta("live_meta", "cash")
-    : readMeta("portfolio_meta", "cash") || readMeta("paper_meta", "cash");
-  const peakNavUsd = hasLive
-    ? readMeta("live_meta", "peak_nav")
-    : readMeta("portfolio_meta", "peak_nav") || readMeta("paper_meta", "peak_nav");
-
+  const cashUsd = metaTable ? readMeta(metaTable, "cash") : 0;
   const navUsd = cashUsd + deployedUsd;
+  // Le pic stocké n'est mis à jour qu'à la photo suivante de l'agent : on le
+  // borne par la NAV courante pour ne jamais afficher un drawdown négatif.
+  const peakNavUsd = Math.max(metaTable ? readMeta(metaTable, "peak_nav") : 0, navUsd);
   const drawdownPct = peakNavUsd > 0 ? ((peakNavUsd - navUsd) / peakNavUsd) * 100 : 0;
 
   // Vraie NAV on-chain stockée par le daemon après chaque realSnapshot()
@@ -115,15 +127,14 @@ export function getOpenPositions(): OpenPosition[] {
         isLive: true,
         outOfRangeSinceSec: (r.out_of_range_since_sec as number) ?? null,
         openedAtSec: (r.opened_at_sec as number) ?? 0,
+        shape: "spot",
       });
     }
   }
 
-  // 2. Positions paper (Portfolio / paper broker) — en complément
-  let paperTable: string | null = null;
-  if (hasTable("paper_positions")) paperTable = "paper_positions";
-  else if (hasTable("positions")) paperTable = "positions";
-  if (paperTable) {
+  // 2. Positions simulées (paper broker ou portefeuille du scan) — en complément
+  const paperTable = simulatedSource()?.positions;
+  if (paperTable && hasTable(paperTable)) {
     const rows = getDb()
       .prepare(`SELECT * FROM ${paperTable} WHERE status='OPEN' ORDER BY id DESC`)
       .all() as Record<string, unknown>[];
@@ -142,6 +153,8 @@ export function getOpenPositions(): OpenPosition[] {
         isLive: false,
         outOfRangeSinceSec: null,
         openedAtSec: 0,
+        // Colonne absente des bases antérieures à la bid-ask → spot
+        shape: r.shape === "sol_bidask" ? "sol_bidask" : "spot",
       });
     }
   }

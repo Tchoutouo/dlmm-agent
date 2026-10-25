@@ -73,6 +73,28 @@ const schema = z.object({
   // Nombre maximum de nouvelles positions à ouvrir par cycle de scan.
   // Limite les swaps auto inutiles quand plusieurs candidats sont approuvés.
   MAX_POSITIONS_PER_SCAN: z.coerce.number().int().min(1).max(5).default(1),
+  // Filtres de sélection des pools (scanner). 0 = filtre désactivé.
+  // Volume 24h / TVL minimal : sous 1, la liquidité tourne trop peu pour générer des fees.
+  MIN_VOLUME_TVL_RATIO: z.coerce.number().min(0).default(1),
+  // Market cap minimale du token de base : en dessous, volatilité trop forte à gérer.
+  MIN_MARKET_CAP_USD: z.coerce.number().min(0).default(1_000_000),
+  // Volume des 4 dernières heures (extrapolé à 24h) / volume 24h : écarte les pools
+  // dont l'activité s'effondre (le volume 24h reflète un pic passé).
+  MIN_RECENT_VOLUME_RATIO: z.coerce.number().min(0).default(0.5),
+  // Bonus de score (0..1) pour les pools qui versent leurs fees en SOL/stable :
+  // les fees ne perdent pas de valeur avec le memecoin. 0 = désactivé.
+  QUOTE_FEES_SCORE_BONUS: z.coerce.number().min(0).max(1).default(0.1),
+  // Écarte les copies de tokens : même symbole qu'un autre token mais market cap
+  // plus faible (souvent une réplique récente qui imite l'original).
+  EXCLUDE_TOKEN_COPIES: z
+    .string()
+    .default("true")
+    .transform((v) => v.toLowerCase() === "true"),
+  // Forme des positions PAPER : "spot" (deux côtés, centré) ou "sol_bidask"
+  // (un seul côté en SOL/stable, bins sous le prix). Pas encore utilisé en live.
+  PAPER_STRATEGY: z.enum(["spot", "sol_bidask"]).default("spot"),
+  // Perte journalière maximale (% de la NAV d'ouverture du jour UTC) → HALT. 0 = désactivé.
+  MAX_DAILY_LOSS_PCT: z.coerce.number().min(0).default(5),
   // Whale-tracking on-chain : seuil USD d'un swap « baleine » et profondeur de scan.
   WHALE_MIN_USD: z.coerce.number().positive().default(10_000),
   WHALE_LOOKBACK_TX: z.coerce.number().int().positive().max(100).default(50),

@@ -8,11 +8,13 @@ import type {
   Timeframe,
 } from "../types.js";
 import { TIMEFRAME_SECONDS } from "../data/dataApiClient.js";
-import { feeAprProxy } from "../analytics/feeApr.js";
+import { feeShareOfVolume, trailingFeeApr } from "../analytics/feeApr.js";
 import { deepAnalyze } from "../analytics/deepAnalysis.js";
 import { buildQuoteProfile } from "../analytics/quoteRisk.js";
 import { assessRisk, riskParamsFromConfig } from "../risk/riskAgent.js";
 import { simulatePosition } from "./positionSimulator.js";
+import { planPosition, recentDropPct, type DipRule, type PositionShape } from "../analytics/positionPlan.js";
+import type { QuoteUsdAt } from "./quoteHistory.js";
 
 export interface BacktestOptions {
   timeframe?: Timeframe;
@@ -24,6 +26,19 @@ export interface BacktestOptions {
   params?: RiskParams;
   /** Prix USD du quote (1 si stable). */
   quoteUsdPrice?: number;
+  /** Sortie anticipée à +X % de PnL (0/absent = détention jusqu'à la fin de la fenêtre). */
+  takeProfitPct?: number;
+  /** Sortie anticipée à −X % de PnL (0/absent = pas de stop). */
+  stopLossPct?: number;
+  /** Forme des positions simulées (défaut spot). */
+  strategy?: PositionShape;
+  /** Historique du prix USD du quote (valorisation USD des pools TOKEN/SOL). */
+  quoteUsdAt?: QuoteUsdAt;
+  /**
+   * N'entrer qu'après une chute récente (avec strategy sol_bidask : jouer le
+   * rebond). Sans chute suffisante, aucune position n'est ouverte à ce pas.
+   */
+  dipRule?: DipRule;
 }
 
 export interface BacktestSummary {
@@ -71,17 +86,32 @@ export function runBacktest(pool: Pool, candles: Candle[], options: BacktestOpti
   let halted = false;
   let steps = 0;
 
-  for (let i = lookback; i + window <= candles.length; i += window) {
+  // Pas suivant : fin de la fenêtre, ou dès la sortie anticipée (TP/SL) pour ne pas
+  // laisser le capital inactif jusqu'à la fin de la fenêtre.
+  let advance = window;
+  for (let i = lookback; i + window <= candles.length; i += advance) {
+    advance = window;
     steps++;
     const trailing = candles.slice(i - lookback, i);
     const now = candles[i]!;
     const poolNow: Pool = { ...pool, currentPrice: now.close };
 
+    // Règle de chute : on surveille chaque bougie et on n'analyse qu'après une
+    // baisse suffisante (bougie courante incluse), sans rien journaliser sinon.
+    if (options.dipRule) {
+      const drop = recentDropPct([...trailing, now], options.dipRule.lookbackCandles + 1);
+      if (drop < options.dipRule.minDropPct) {
+        steps--;
+        advance = 1;
+        continue;
+      }
+    }
+
     const opportunity: ScoredOpportunity = {
       pool: poolNow,
       score: 0.5,
       components: { yieldScore: 0.5, sustainabilityScore: 0.5, depthScore: 0.5 },
-      estimatedFeeApr: feeAprProxy(poolNow),
+      estimatedFeeApr: trailingFeeApr(poolNow, trailing, candleSeconds),
       reasons: [],
     };
 
@@ -108,7 +138,8 @@ export function runBacktest(pool: Pool, candles: Candle[], options: BacktestOpti
       exposureByPool: {},
     };
 
-    const risk = assessRisk(opportunity, analysis, snapshot, params, quoteProfile);
+    const plan = planPosition(options.strategy ?? "spot", poolNow, analysis.suggestedRange);
+    const risk = assessRisk(opportunity, analysis, snapshot, params, quoteProfile, plan);
     const ts = now.timestamp ? new Date(now.timestamp * 1000).toISOString() : new Date().toISOString();
 
     if (risk.verdict === "HALT") {
@@ -122,13 +153,21 @@ export function runBacktest(pool: Pool, candles: Candle[], options: BacktestOpti
       const sim = simulatePosition({
         entryPrice: now.close,
         sizeUsd: risk.recommendedSizeUsd,
-        range: analysis.suggestedRange,
+        range: { priceLow: plan.rangeLow, priceHigh: plan.rangeHigh },
+        shape: plan.shape,
+        binStep: pool.binStep,
+        quoteUsdEntry: options.quoteUsdAt?.(now.timestamp),
+        quoteUsdPath: options.quoteUsdAt ? forward.map((c) => options.quoteUsdAt!(c.timestamp)) : undefined,
         feeAprAnnual: opportunity.estimatedFeeApr,
+        feeShareOfVolume: feeShareOfVolume(pool),
         forwardCandles: forward,
         candleSeconds,
+        takeProfitPct: options.takeProfitPct,
+        stopLossPct: options.stopLossPct,
       });
       nav += sim.realizedPnlUsd;
       entered++;
+      advance = Math.max(1, Math.round((sim.holdingDays * 86_400) / candleSeconds));
 
       const e = baseEntry(poolNow, "ENTER", opportunity, analysis, risk, ts);
       e.sizeUsd = risk.recommendedSizeUsd;
@@ -136,9 +175,13 @@ export function runBacktest(pool: Pool, candles: Candle[], options: BacktestOpti
       e.feesCollectedUsd = sim.feesEarnedUsd;
       e.wentOutOfRange = sim.wentOutOfRange;
       e.holdingDays = sim.holdingDays;
+      e.exitReason = sim.exitReason;
+      e.rangeLow = plan.rangeLow;
+      e.rangeHigh = plan.rangeHigh;
       entries.push(e);
     } else {
       skipped++;
+      if (options.dipRule) advance = 1; // chute refusée par le risque : on reguette la suivante
       entries.push(baseEntry(poolNow, "SKIP", opportunity, analysis, risk, ts));
     }
   }

@@ -12,6 +12,8 @@ import { sizePosition } from "./positionSizing.js";
 import { recommendHedge } from "./hedging.js";
 import { quoteStressShock } from "../analytics/quoteRisk.js";
 import { config } from "../config.js";
+import { bidAskLayout, bidAskValueRatio } from "../analytics/bidAsk.js";
+import type { PositionPlan } from "../analytics/positionPlan.js";
 
 /** Convertit les pourcentages de la config en fractions internes. */
 export function riskParamsFromConfig(): RiskParams {
@@ -19,6 +21,7 @@ export function riskParamsFromConfig(): RiskParams {
     maxPositionUsd: config.MAX_POSITION_USD,
     minPositionUsd: config.MIN_POSITION_USD,
     maxDrawdown: config.MAX_DRAWDOWN_PCT / 100,
+    maxDailyLoss: config.MAX_DAILY_LOSS_PCT / 100,
     maxPortfolioExposure: config.MAX_PORTFOLIO_EXPOSURE_PCT / 100,
     maxPoolConcentration: config.MAX_POOL_CONCENTRATION_PCT / 100,
     maxPoolLiquidityShare: config.MAX_POOL_LIQUIDITY_SHARE_PCT / 100,
@@ -44,7 +47,9 @@ export function assessRisk(
   analysis: DeepAnalysis,
   snapshot: PortfolioSnapshot,
   params: RiskParams = riskParamsFromConfig(),
-  quoteProfile?: QuoteProfile
+  quoteProfile?: QuoteProfile,
+  /** Position réellement prévue (forme + range). Absent = spot sur le range suggéré. */
+  plan?: PositionPlan
 ): RiskAssessment {
   const pool = opportunity.pool;
   const checks: RiskCheck[] = [];
@@ -52,13 +57,21 @@ export function assessRisk(
   // Shock du quote en USD (0 si stable/absent) — couvre le risque SOL/USD
   const quoteShock = quoteProfile ? quoteStressShock(quoteProfile) : 0;
 
+  // Le stress et la couverture portent sur la position qui sera ouverte : pour une
+  // bid-ask d'un côté, valeur par bins au bas du range, exposition nulle à l'entrée.
+  const range = plan ? { priceLow: plan.rangeLow, priceHigh: plan.rangeHigh } : analysis.suggestedRange;
+  const stressValueRatio =
+    plan?.shape === "sol_bidask"
+      ? bidAskValueRatio(plan.rangeLow, bidAskLayout(plan.rangeLow, plan.rangeHigh, pool.binStep))
+      : undefined;
+
   // Dimensionnement (calculé tôt pour alimenter les checks et le hedge)
-  const sizing = sizePosition(pool, analysis.suggestedRange, snapshot, params, quoteShock);
+  const sizing = sizePosition(pool, range, snapshot, params, quoteShock, stressValueRatio);
   const stressLossUsd = sizing.recommendedSizeUsd * sizing.stressLossPct;
 
   const hedge = recommendHedge(
     pool,
-    analysis.suggestedRange,
+    range,
     sizing.recommendedSizeUsd,
     analysis.feeRegime,
     quoteProfile
@@ -92,6 +105,35 @@ export function assessRisk(
       params.maxDrawdown * 100
     ).toFixed(0)}%`,
   });
+
+  // ── 1 bis. Limite de perte journalière ──
+  if (params.maxDailyLoss && snapshot.dailyLossPct !== undefined) {
+    const lossPct = snapshot.dailyLossPct;
+    const maxPct = (params.maxDailyLoss * 100).toFixed(0);
+    if (lossPct / 100 >= params.maxDailyLoss) {
+      return finalize(
+        "HALT",
+        0,
+        sizing,
+        stressLossUsd,
+        hedge,
+        [
+          ...checks,
+          {
+            name: "daily_loss",
+            passed: false,
+            detail: `Perte du jour ${lossPct.toFixed(1)}% ≥ seuil ${maxPct}% — entrées suspendues jusqu'à demain (UTC)`,
+          },
+        ],
+        ["LIMITE JOURNALIÈRE : perte maximale du jour atteinte, plus d'entrée aujourd'hui"]
+      );
+    }
+    checks.push({
+      name: "daily_loss",
+      passed: true,
+      detail: `Perte du jour ${lossPct.toFixed(1)}% < ${maxPct}%`,
+    });
+  }
 
   // ── 2. Checks de veto durs ──
   checks.push(check(

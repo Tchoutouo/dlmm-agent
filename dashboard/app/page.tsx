@@ -20,6 +20,7 @@ export default function Page() {
   const learning = getLearning();
   const netPnl = equity.length ? equity[equity.length - 1]!.pnl : 0;
   const winRate = learning.overall.winRate;
+  const profitFactor = learning.overall.profitFactor;
 
   // Gains latents : PnL non réalisé + fees accumulées sur positions ouvertes
   const unrealizedGain = positions.reduce(
@@ -82,6 +83,12 @@ export default function Page() {
         <div className="card">
           <div className="label">Win rate</div>
           <div className="val num accent">{winRate === null ? "—" : `${(winRate * 100).toFixed(0)}%`}</div>
+          <div className="tiny muted" style={{ marginTop: 4 }}>
+            Profit factor :{" "}
+            <span className={profitFactor === null ? "" : profitFactor >= 1 ? "pos" : "neg"}>
+              {profitFactor === null ? (learning.overall.withOutcome > 0 ? "∞" : "—") : profitFactor.toFixed(2)}
+            </span>
+          </div>
         </div>
       </div>
 
@@ -131,6 +138,31 @@ export default function Page() {
         {/* Colonne droite */}
         <div>
           <ApprovalsPanel />
+
+          <div className="panel">
+            <h2>PnL par jour</h2>
+            {learning.daily.length === 0 ? (
+              <p className="empty tiny">Pas encore de position clôturée.</p>
+            ) : (
+              <table>
+                <thead>
+                  <tr><th>Jour (UTC)</th><th className="right">Trades</th><th className="right">Win</th><th className="right">PnL</th></tr>
+                </thead>
+                <tbody>
+                  {learning.daily.map((d) => (
+                    <tr key={d.day}>
+                      <td className="num">{d.day}</td>
+                      <td className="right num">{d.trades}</td>
+                      <td className="right num">{`${((d.wins / d.trades) * 100).toFixed(0)}%`}</td>
+                      <td className={`right num ${d.pnlUsd >= 0 ? "pos" : "neg"}`}>
+                        {`${d.pnlUsd >= 0 ? "+" : ""}$${d.pnlUsd.toFixed(1)}`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
 
           <div className="panel">
             <h2>Apprentissage (Agent 5)</h2>

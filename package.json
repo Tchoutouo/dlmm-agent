@@ -11,6 +11,8 @@
     "learn": "tsx src/learn.ts",
     "backtest": "tsx src/backtest.ts",
     "backtest:multi": "tsx src/backtest-multi.ts",
+    "backtest:sltp": "tsx src/backtest-sltp.ts",
+    "backtest:strategy": "tsx src/backtest-strategy.ts",
     "execute": "tsx src/execute.ts",
     "live": "tsx src/live.ts",
     "whales": "tsx src/whales.ts",
@@ -41,7 +43,7 @@
     "@types/node": "^22.10.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
-    "vitest": "^3.0.2"
+    "vitest": "^5.0.5"
   },
   "engines": {
     "node": ">=20"

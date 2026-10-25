@@ -16,6 +16,9 @@ import { logger } from "../lib/logger.js";
 
 const log = logger.child({ module: "productionDeps" });
 
+/** Les paires stables ont peu de volume par nature (prix fixe) : filtres d'activité levés. */
+const STABLE_SCAN_RELAX = { minVolumeTvlRatio: 0, minRecentVolumeRatio: 0 };
+
 export interface ProductionClients {
   market: MeteoraClient;
   data: DataApiClient;
@@ -65,7 +68,7 @@ export function createProductionDeps(c: ProductionClients): OrchestratorDeps {
             console.log(
               `  ℹ️  SOL faible (${(solLamports / 1e9).toFixed(3)} SOL) — scan limité aux pools stables`
             );
-            return scanOpportunities(stablePairs, { topN: 10, minStableN: 10 });
+            return scanOpportunities(stablePairs, { topN: 10, minStableN: 10, ...STABLE_SCAN_RELAX });
           }
         }
       }
@@ -84,6 +87,7 @@ export function createProductionDeps(c: ProductionClients): OrchestratorDeps {
         minLiquidityUsd: 5_000,
         minVolume24h: 200,
         verifiedOnly: false,
+        ...STABLE_SCAN_RELAX,
       });
       if (stableCandidates.length > 0) {
         console.log(`  ℹ️  ${stableCandidates.length} pool(s) stable(s) trouvée(s) (USDC-USDT/USDS…)`);

@@ -1,8 +1,8 @@
 /**
  * Types partagés du système DLMM Agent.
  *
- * `MeteoraPair` reflète fidèlement la réponse de l'endpoint
- * GET https://dlmm-api.meteora.ag/pair/all
+ * `MeteoraPair` reflète la réponse de l'endpoint
+ * GET https://dlmm.datapi.meteora.ag/pools
  * (les nombres arrivent parfois en string dans l'API — on normalise au parsing).
  */
 
@@ -32,6 +32,7 @@ export interface MeteoraPair {
     decimals: number;
     is_verified: boolean;
     price: number;
+    market_cap?: number;
   };
   token_y: {
     address: string;
@@ -39,12 +40,15 @@ export interface MeteoraPair {
     decimals: number;
     is_verified: boolean;
     price: number;
+    market_cap?: number;
   };
   pool_config: {
     bin_step: number;
     base_fee_pct: number;
     max_fee_pct: number;
     protocol_fee_pct: number;
+    /** 0 = InputOnly (fees dans le token d'entrée du swap), 1 = OnlyY (fees en token Y). */
+    collect_fee_mode?: number;
   };
   dynamic_fee_pct: number;
   tvl: number;
@@ -81,6 +85,16 @@ export interface Pool {
   feeTvl1h: number;
   isVerified: boolean;
   isBlacklisted: boolean;
+  /** Mint du token de base (le côté non-quote : ni SOL ni stablecoin). Absent = inconnu. */
+  baseMint?: string;
+  /** Symbole du token de base (détection des copies : même symbole, autre mint). */
+  baseSymbol?: string;
+  /** Market cap du token de base (USD). Absent = inconnu, le filtre ne s'applique pas. */
+  baseMarketCapUsd?: number;
+  /** Volume des 4 dernières heures (USD). Absent = inconnu, le filtre ne s'applique pas. */
+  volume4h?: number;
+  /** Fees versées uniquement en quote SOL/stable (mode OnlyY avec Y = SOL ou stable). */
+  feesInQuote?: boolean;
 }
 
 /** Poids du modèle de score multi-critères (Weighted Scoring Model). */
@@ -177,6 +191,8 @@ export interface DecisionFeatures {
   bindingCap?: string;
   hedged?: boolean;
   expectedNetApr?: number;
+  /** Forme de la position ouverte : spot (deux côtés) ou sol_bidask (un côté). */
+  shape?: "spot" | "sol_bidask";
 }
 
 export interface JournalEntry {
@@ -205,6 +221,8 @@ export interface JournalEntry {
   wentOutOfRange?: boolean;
   /** Durée de détention en jours (issue). */
   holdingDays?: number;
+  /** Motif de sortie (backtest) : fin de fenêtre, take-profit ou stop-loss. */
+  exitReason?: "horizon" | "take_profit" | "stop_loss";
   outcomeNotes?: string;
 }
 
@@ -229,6 +247,8 @@ export interface PortfolioSnapshot {
   deployedUsd: number; // capital en positions
   peakNavUsd: number;
   drawdownPct: number; // (peak - nav) / peak × 100
+  /** Perte depuis l'ouverture du jour UTC (% de la NAV d'ouverture, ≥ 0). Absent = non suivi. */
+  dailyLossPct?: number;
   positions: PortfolioPosition[];
   exposureByPool: Record<string, number>; // adresse -> USD
 }
@@ -238,6 +258,8 @@ export interface RiskParams {
   maxPositionUsd: number;
   minPositionUsd: number;
   maxDrawdown: number; // fraction
+  /** Perte journalière max (fraction). Absent ou 0 = désactivé. */
+  maxDailyLoss?: number;
   maxPortfolioExposure: number;
   maxPoolConcentration: number;
   maxPoolLiquidityShare: number;
@@ -308,6 +330,8 @@ export interface PerformanceMetrics {
   avgPnlUsd: number | null;
   totalFeesUsd: number;
   avgRealizedReturn: number | null; // PnL / taille, moyen
+  /** Gains bruts / pertes brutes. null si aucune perte (non défini). */
+  profitFactor: number | null;
 }
 
 /** Qualité de prédiction : APR net prédit vs rendement réalisé. */

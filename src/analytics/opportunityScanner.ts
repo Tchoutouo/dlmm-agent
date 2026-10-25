@@ -1,5 +1,6 @@
 import type { Pool, ScoredOpportunity, ScoringWeights } from "../types.js";
 import { feeAprProxy, capitalTurnover } from "./feeApr.js";
+import { config } from "../config.js";
 
 /** Poids par défaut du WSM (somme = 1). Ajustables par l'agent superviseur. */
 export const DEFAULT_WEIGHTS: ScoringWeights = {
@@ -11,7 +12,7 @@ export const DEFAULT_WEIGHTS: ScoringWeights = {
 /** Stablecoins Solana mainnet connus — une paire stable/stable = 0 IL. */
 export const STABLE_MINTS = new Set([
   "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC
-  "Es9vMFrzWqFdTx2jPvQTjTAhMcEoP1eZFSBdmrVWV3p4", // USDT
+  "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", // USDT
   "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",   // USDS
   "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",  // PYUSD
   "EjmyN6qEC1Tf1JxiG1ae7UTJhUxSwk1TCWNWqxWV4J6o",  // DAI
@@ -30,6 +31,18 @@ export interface ScanOptions {
   minVolume24h?: number;
   /** Exiger les pools vérifiées uniquement. */
   verifiedOnly?: boolean;
+  /** Volume 24h / TVL minimal (0 = désactivé). */
+  minVolumeTvlRatio?: number;
+  /** Market cap minimale du token de base, USD (0 = désactivé). */
+  minMarketCapUsd?: number;
+  /** Volume 4h extrapolé à 24h / volume 24h minimal (0 = désactivé). */
+  minRecentVolumeRatio?: number;
+  /** Ne garder qu'une pool par token de base : celle à la plus grosse TVL. */
+  onePoolPerToken?: boolean;
+  /** Bonus de score (0..1) des pools à fees versées en SOL/stable (0 = aucun). */
+  quoteFeesBonus?: number;
+  /** Écarter les copies : même symbole qu'un token à plus grosse market cap. */
+  excludeTokenCopies?: boolean;
   /** Nombre total d'opportunités à renvoyer. */
   topN?: number;
   /**
@@ -43,6 +56,12 @@ const DEFAULTS: Required<Omit<ScanOptions, "weights">> = {
   minLiquidityUsd: 10_000,
   minVolume24h: 5_000,
   verifiedOnly: true,
+  minVolumeTvlRatio: config.MIN_VOLUME_TVL_RATIO,
+  minMarketCapUsd: config.MIN_MARKET_CAP_USD,
+  minRecentVolumeRatio: config.MIN_RECENT_VOLUME_RATIO,
+  onePoolPerToken: true,
+  quoteFeesBonus: config.QUOTE_FEES_SCORE_BONUS,
+  excludeTokenCopies: config.EXCLUDE_TOKEN_COPIES,
   topN: 10,
   minStableN: 1,
 };
@@ -63,14 +82,32 @@ export function scanOpportunities(
   const weights = options.weights ?? DEFAULT_WEIGHTS;
   const opts = { ...DEFAULTS, ...options };
 
-  // 1. Filtrage de sécurité
-  const eligible = pools.filter((p) => {
+  // Copies détectées sur tout l'univers fourni (avant les autres filtres, pour
+  // reconnaître l'original même s'il est lui-même écarté ensuite)
+  const copies = opts.excludeTokenCopies ? findTokenCopies(pools) : new Set<string>();
+
+  // 1. Filtrage de sécurité (les champs absents = inconnus → filtre non appliqué)
+  const filtered = pools.filter((p) => {
     if (p.isBlacklisted) return false;
+    if (p.baseMint && copies.has(p.baseMint)) return false;
     if (opts.verifiedOnly && !p.isVerified) return false;
     if (p.liquidityUsd < opts.minLiquidityUsd) return false;
     if (p.volume24h < opts.minVolume24h) return false;
+    if (capitalTurnover(p) < opts.minVolumeTvlRatio) return false;
+    if (
+      opts.minMarketCapUsd > 0 &&
+      !isStablePool(p) &&
+      p.baseMarketCapUsd !== undefined &&
+      p.baseMarketCapUsd < opts.minMarketCapUsd
+    ) return false;
+    if (
+      p.volume4h !== undefined &&
+      p.volume24h > 0 &&
+      (p.volume4h * 6) / p.volume24h < opts.minRecentVolumeRatio
+    ) return false;
     return true;
   });
+  const eligible = opts.onePoolPerToken ? keepDeepestPoolPerToken(filtered) : filtered;
 
   if (eligible.length === 0) return [];
 
@@ -92,10 +129,13 @@ export function scanOpportunities(
     const sustainabilityScore = norm("sustainabilityRaw", m.sustainabilityRaw);
     const depthScore = norm("depthRaw", m.depthRaw);
 
-    const score =
+    const wsm =
       weights.yield * yieldScore +
       weights.sustainability * sustainabilityScore +
       weights.depth * depthScore;
+    // Bonus fees en quote, en restant dans [0,1] : score = (1−b)·WSM + b·[fees en quote]
+    const b = opts.quoteFeesBonus;
+    const score = (1 - b) * wsm + (m.pool.feesInQuote ? b : 0);
 
     return {
       pool: m.pool,
@@ -123,6 +163,48 @@ export function scanOpportunities(
   }
 
   return sorted.slice(0, opts.topN);
+}
+
+/**
+ * Mints « copies » : tokens dont le symbole est aussi porté par un autre mint à
+ * plus grosse market cap (l'original). Sans market cap connue, pas de verdict.
+ */
+export function findTokenCopies(pools: Pool[]): Set<string> {
+  const original = new Map<string, { mint: string; mcap: number }>(); // symbole → mint dominant
+  const mcapOf = new Map<string, number>();
+  for (const p of pools) {
+    if (!p.baseMint || !p.baseSymbol || p.baseMarketCapUsd === undefined || isStablePool(p)) continue;
+    mcapOf.set(p.baseMint, p.baseMarketCapUsd);
+    const key = p.baseSymbol.trim().toUpperCase();
+    const cur = original.get(key);
+    if (!cur || p.baseMarketCapUsd > cur.mcap) original.set(key, { mint: p.baseMint, mcap: p.baseMarketCapUsd });
+  }
+  const copies = new Set<string>();
+  for (const p of pools) {
+    if (!p.baseMint || !p.baseSymbol || !mcapOf.has(p.baseMint)) continue;
+    const orig = original.get(p.baseSymbol.trim().toUpperCase());
+    if (orig && orig.mint !== p.baseMint) copies.add(p.baseMint);
+  }
+  return copies;
+}
+
+/**
+ * Une seule pool par token de base : celle à la plus grosse TVL (plus de volume,
+ * donc plus de fees). Évite d'empiler plusieurs pools du même token.
+ * Les stables et les pools sans token de base connu sont conservées telles quelles.
+ */
+function keepDeepestPoolPerToken(pools: Pool[]): Pool[] {
+  const best = new Map<string, Pool>();
+  const rest: Pool[] = [];
+  for (const p of pools) {
+    if (!p.baseMint || isStablePool(p)) {
+      rest.push(p);
+      continue;
+    }
+    const cur = best.get(p.baseMint);
+    if (!cur || p.liquidityUsd > cur.liquidityUsd) best.set(p.baseMint, p);
+  }
+  return [...best.values(), ...rest];
 }
 
 type MetricKey = "yieldRaw" | "sustainabilityRaw" | "depthRaw";
@@ -165,6 +247,7 @@ function explain(
   if (c.depthScore > 0.7) reasons.push("Liquidité profonde — moindre slippage/risque");
   else if (c.depthScore < 0.3) reasons.push("Liquidité fine — prudence sur la taille");
 
+  if (pool.feesInQuote) reasons.push("Fees versées en SOL/stable (ne suivent pas le memecoin)");
   reasons.push(`Bin step ${pool.binStep} (granularité du range)`);
   return reasons;
 }

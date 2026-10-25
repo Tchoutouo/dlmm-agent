@@ -2,6 +2,7 @@ import { MeteoraClient } from "./data/meteoraClient.js";
 import { DataApiClient } from "./data/dataApiClient.js";
 import { PriceOracle, STABLE_MINTS } from "./data/priceOracle.js";
 import { runBacktest } from "./backtest/backtester.js";
+import { loadQuoteUsdHistory } from "./backtest/quoteHistory.js";
 import { analyzeJournal, formatReport } from "./learning/learningAgent.js";
 
 /**
@@ -17,7 +18,7 @@ async function main() {
   const address = process.argv[2];
   if (!address) {
     console.log("Usage : npm run backtest -- <adresse_pool>");
-    console.log("Trouve une adresse via https://dlmm-api.meteora.ag/pair/all");
+    console.log("Adresses : voir les pools retenues par npm run scan, ou https://app.meteora.ag/dlmm");
     return;
   }
 
@@ -34,7 +35,14 @@ async function main() {
     ? 1
     : await oracle.getUsdPrice(pool.mintY);
 
-  const { entries, summary } = runBacktest(pool, candles, { timeframe: "1h", quoteUsdPrice });
+  const quoteUsdAt = await loadQuoteUsdHistory(pool.mintY, await market.getAllPairs(), data, 720);
+  if (!quoteUsdAt) console.log("ℹ️  Pas d'historique USD pour le quote : valorisation en unités de quote\n");
+
+  const { entries, summary } = runBacktest(pool, candles, {
+    timeframe: "1h",
+    quoteUsdPrice,
+    quoteUsdAt: quoteUsdAt ?? undefined,
+  });
 
   console.log("── Résumé du backtest ──");
   console.log(`Pas : ${summary.steps} | entrées : ${summary.entered} | skips : ${summary.skipped}`);

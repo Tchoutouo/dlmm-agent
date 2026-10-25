@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { assessRisk } from "../src/risk/riskAgent.js";
+import { planPosition } from "../src/analytics/positionPlan.js";
+import { bidAskLayout, bidAskValueRatio } from "../src/analytics/bidAsk.js";
 import { sizePosition } from "../src/risk/positionSizing.js";
 import { buildQuoteProfile, quoteStressShock } from "../src/analytics/quoteRisk.js";
 import { SOL_MINT } from "../src/data/priceOracle.js";
@@ -77,6 +79,7 @@ function snapshot(s: Partial<PortfolioSnapshot> = {}): PortfolioSnapshot {
     deployedUsd: s.deployedUsd ?? 0,
     peakNavUsd: s.peakNavUsd ?? 1000,
     drawdownPct: s.drawdownPct ?? 0,
+    dailyLossPct: s.dailyLossPct,
     positions: s.positions ?? [],
     exposureByPool: s.exposureByPool ?? {},
   };
@@ -92,6 +95,30 @@ describe("assessRisk — disjoncteur drawdown", () => {
   it("ne déclenche pas le disjoncteur sous le seuil", () => {
     const r = assessRisk(opportunity(pool()), analysis(), snapshot({ drawdownPct: 5 }), PARAMS);
     expect(r.verdict).not.toBe("HALT");
+  });
+});
+
+describe("assessRisk — limite de perte journalière", () => {
+  const withDaily = { ...PARAMS, maxDailyLoss: 0.05 };
+
+  it("HALT quand la perte du jour atteint le seuil", () => {
+    const r = assessRisk(opportunity(pool()), analysis(), snapshot({ dailyLossPct: 6 }), withDaily);
+    expect(r.verdict).toBe("HALT");
+    expect(r.recommendedSizeUsd).toBe(0);
+    expect(r.checks.some((c) => c.name === "daily_loss" && !c.passed)).toBe(true);
+  });
+
+  it("laisse passer sous le seuil et trace le contrôle", () => {
+    const r = assessRisk(opportunity(pool()), analysis(), snapshot({ dailyLossPct: 2 }), withDaily);
+    expect(r.verdict).not.toBe("HALT");
+    expect(r.checks.some((c) => c.name === "daily_loss" && c.passed)).toBe(true);
+  });
+
+  it("ignore la limite quand elle est désactivée ou non suivie", () => {
+    const off = assessRisk(opportunity(pool()), analysis(), snapshot({ dailyLossPct: 50 }), { ...PARAMS, maxDailyLoss: 0 });
+    const untracked = assessRisk(opportunity(pool()), analysis(), snapshot(), withDaily);
+    expect(off.verdict).not.toBe("HALT");
+    expect(untracked.verdict).not.toBe("HALT");
   });
 });
 
@@ -202,5 +229,34 @@ describe("buildQuoteProfile / quoteStressShock", () => {
     }
     // et le hedge SOL signale l'exposition au quote
     expect(sol.hedge.quoteExposureUsd).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe("assessRisk — position prévue (forme et range)", () => {
+  const SOL = "So11111111111111111111111111111111111111112";
+  const memeSol = pool({ name: "MEME-SOL", mintX: "meme", mintY: SOL });
+  const suggested = { priceLow: 80, priceHigh: 120 };
+  const bidask = planPosition("sol_bidask", memeSol, suggested);
+  const wide = analysis({ suggestedRange: suggested });
+
+  it("sans plan : comportement inchangé (spot sur le range suggéré)", () => {
+    const a = assessRisk(opportunity(memeSol), wide, snapshot(), PARAMS);
+    const b = assessRisk(opportunity(memeSol), wide, snapshot(), PARAMS, undefined, planPosition("spot", memeSol, suggested));
+    expect(b.stressLossPct).toBeCloseTo(a.stressLossPct, 12);
+    expect(b.recommendedSizeUsd).toBe(a.recommendedSizeUsd);
+  });
+
+  it("bid-ask : perte de stress calculée par bins sur son propre range", () => {
+    const spot = assessRisk(opportunity(memeSol), wide, snapshot(), PARAMS);
+    const ba = assessRisk(opportunity(memeSol), wide, snapshot(), PARAMS, undefined, bidask);
+    const expected = bidAskValueRatio(bidask.rangeLow, bidAskLayout(bidask.rangeLow, bidask.rangeHigh, memeSol.binStep)) - 1;
+    expect(ba.stressLossPct).toBeCloseTo(expected, 12);
+    expect(ba.stressLossPct).not.toBeCloseTo(spot.stressLossPct, 6);
+  });
+
+  it("bid-ask : aucune exposition directionnelle à l'entrée (100 % quote)", () => {
+    const ba = assessRisk(opportunity(memeSol), wide, snapshot(), PARAMS, undefined, bidask);
+    expect(ba.hedge.hedgeRatio).toBeCloseTo(0, 10);
+    expect(ba.hedge.recommended).toBe(false);
   });
 });

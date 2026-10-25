@@ -16,6 +16,16 @@ export interface Metrics {
   winRate: number | null;
   totalPnlUsd: number;
   avgPnlUsd: number | null;
+  /** Gains bruts / pertes brutes ; null sans perte. */
+  profitFactor: number | null;
+}
+
+export interface DailyPnl {
+  /** Jour UTC de clôture (AAAA-MM-JJ). */
+  day: string;
+  trades: number;
+  wins: number;
+  pnlUsd: number;
 }
 
 export interface LearningSummary {
@@ -24,18 +34,43 @@ export interface LearningSummary {
   recurringErrors: string[];
   suggestions: string[];
   calibration: { samples: number; correlation: number | null };
+  /** PnL réalisé par jour de clôture, du plus récent au plus ancien. */
+  daily: DailyPnl[];
 }
 
 function metrics(rows: JournalRow[]): Metrics {
   const r = rows.filter((x) => x.realizedPnlUsd != null);
   const total = r.reduce((s, x) => s + (x.realizedPnlUsd ?? 0), 0);
   const wins = r.filter((x) => (x.realizedPnlUsd ?? 0) > 0).length;
+  const grossWin = r.reduce((s, x) => s + Math.max(0, x.realizedPnlUsd ?? 0), 0);
+  const grossLoss = r.reduce((s, x) => s + Math.max(0, -(x.realizedPnlUsd ?? 0)), 0);
   return {
     withOutcome: r.length,
     winRate: r.length ? wins / r.length : null,
     totalPnlUsd: total,
     avgPnlUsd: r.length ? total / r.length : null,
+    profitFactor: grossLoss > 0 ? grossWin / grossLoss : null,
   };
+}
+
+/**
+ * PnL réalisé regroupé par jour UTC de clôture. Le journal date la décision
+ * d'entrée ; la clôture = entrée + durée de détention.
+ */
+export function dailyPnl(rows: JournalRow[], days = 14): DailyPnl[] {
+  const byDay = new Map<string, DailyPnl>();
+  for (const x of rows) {
+    if (x.realizedPnlUsd == null) continue;
+    const closedMs = Date.parse(x.timestamp) + (x.holdingDays ?? 0) * 86_400_000;
+    if (Number.isNaN(closedMs)) continue;
+    const day = new Date(closedMs).toISOString().slice(0, 10);
+    const d = byDay.get(day) ?? { day, trades: 0, wins: 0, pnlUsd: 0 };
+    d.trades++;
+    if (x.realizedPnlUsd > 0) d.wins++;
+    d.pnlUsd += x.realizedPnlUsd;
+    byDay.set(day, d);
+  }
+  return [...byDay.values()].sort((a, b) => b.day.localeCompare(a.day)).slice(0, days);
 }
 
 function pearson(xs: number[], ys: number[]): number | null {
@@ -101,5 +136,6 @@ export function summarize(entries: JournalRow[]): LearningSummary {
     recurringErrors,
     suggestions,
     calibration: { samples: cal.length, correlation: pearson(predicted, realized) },
+    daily: dailyPnl(enters),
   };
 }
