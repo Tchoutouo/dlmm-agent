@@ -113,6 +113,8 @@ export class MeteoraClient {
       baseMint: base.address,
       baseMarketCapUsd: toNum(base.market_cap),
       volume4h: toNum(p.volume?.["4h"]),
+      // OnlyY (1) : toutes les fees en token Y — utile seulement si Y est SOL ou un stable
+      feesInQuote: p.pool_config.collect_fee_mode === 1 && quoteRank(p.token_y.address) > 0,
     };
   }
 }

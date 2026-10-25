@@ -75,6 +75,22 @@ describe("MeteoraClient — cas nominaux", () => {
     expect(pool.volume4h).toBe(90_000);
   });
 
+  it("feesInQuote : mode OnlyY (1) et token Y SOL/stable uniquement", async () => {
+    const SOL = "So11111111111111111111111111111111111111112";
+    const cfg = (mode: number) => ({ bin_step: 25, base_fee_pct: 0.25, collect_fee_mode: mode });
+    const memeSol = (mode: number, y = SOL) => ({
+      ...POOL_STUB,
+      token_x: { address: "meme", is_verified: true },
+      token_y: { address: y, is_verified: true },
+      pool_config: cfg(mode),
+    });
+    mockFetch([okJson(memeSol(1)), okJson(memeSol(0)), okJson(memeSol(1, "otherMeme"))]);
+    const client = new MeteoraClient("https://fake.api");
+    expect((await client.getPair("a")).feesInQuote).toBe(true);
+    expect((await client.getPair("b")).feesInQuote).toBe(false); // InputOnly
+    expect((await client.getPair("c")).feesInQuote).toBe(false); // Y n'est pas un quote
+  });
+
   it("SOL-USDC et USDC-SOL ont le même token de base (SOL)", async () => {
     const SOL = "So11111111111111111111111111111111111111112";
     const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";

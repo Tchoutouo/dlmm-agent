@@ -81,6 +81,9 @@ const schema = z.object({
   // Volume des 4 dernières heures (extrapolé à 24h) / volume 24h : écarte les pools
   // dont l'activité s'effondre (le volume 24h reflète un pic passé).
   MIN_RECENT_VOLUME_RATIO: z.coerce.number().min(0).default(0.5),
+  // Bonus de score (0..1) pour les pools qui versent leurs fees en SOL/stable :
+  // les fees ne perdent pas de valeur avec le memecoin. 0 = désactivé.
+  QUOTE_FEES_SCORE_BONUS: z.coerce.number().min(0).max(1).default(0.1),
   // Forme des positions PAPER : "spot" (deux côtés, centré) ou "sol_bidask"
   // (un seul côté en SOL/stable, bins sous le prix). Pas encore utilisé en live.
   PAPER_STRATEGY: z.enum(["spot", "sol_bidask"]).default("spot"),

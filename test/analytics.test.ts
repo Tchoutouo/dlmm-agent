@@ -103,6 +103,7 @@ function mockPool(p: Partial<Pool>): Pool {
     baseMint: p.baseMint,
     baseMarketCapUsd: p.baseMarketCapUsd,
     volume4h: p.volume4h,
+    feesInQuote: p.feesInQuote,
   };
 }
 
@@ -213,5 +214,27 @@ describe("scanOpportunities — filtres de sélection DLMM", () => {
   it("n'applique pas la market cap aux paires stables", () => {
     const pools = [mockPool({ name: "USDC-USDT", mintX: USDC, mintY: USDT, volume24h: 200_000, baseMarketCapUsd: 0 })];
     expect(names(pools, { minMarketCapUsd: 1_000_000 })).toEqual(["USDC-USDT"]);
+  });
+});
+
+describe("scanOpportunities — fees versées en quote", () => {
+  it("à métriques égales, classe en tête la pool qui verse ses fees en SOL/stable", () => {
+    const pools = [
+      mockPool({ name: "MIXED-FEES", volume24h: 200_000 }),
+      mockPool({ name: "QUOTE-FEES", volume24h: 200_000, feesInQuote: true }),
+    ];
+    const res = scanOpportunities(pools, { topN: 2, minStableN: 0, quoteFeesBonus: 0.1 });
+    expect(res[0]!.pool.name).toBe("QUOTE-FEES");
+    expect(res[0]!.score).toBeLessThanOrEqual(1);
+    expect(res[0]!.reasons.some((r) => r.includes("SOL/stable"))).toBe(true);
+  });
+
+  it("sans bonus, l'ordre ne dépend pas du mode de fees", () => {
+    const pools = [
+      mockPool({ name: "A", volume24h: 200_000 }),
+      mockPool({ name: "B", volume24h: 200_000, feesInQuote: true }),
+    ];
+    const res = scanOpportunities(pools, { topN: 2, minStableN: 0, quoteFeesBonus: 0 });
+    expect(res[0]!.score).toBe(res[1]!.score);
   });
 });

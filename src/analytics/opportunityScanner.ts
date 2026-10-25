@@ -39,6 +39,8 @@ export interface ScanOptions {
   minRecentVolumeRatio?: number;
   /** Ne garder qu'une pool par token de base : celle à la plus grosse TVL. */
   onePoolPerToken?: boolean;
+  /** Bonus de score (0..1) des pools à fees versées en SOL/stable (0 = aucun). */
+  quoteFeesBonus?: number;
   /** Nombre total d'opportunités à renvoyer. */
   topN?: number;
   /**
@@ -56,6 +58,7 @@ const DEFAULTS: Required<Omit<ScanOptions, "weights">> = {
   minMarketCapUsd: config.MIN_MARKET_CAP_USD,
   minRecentVolumeRatio: config.MIN_RECENT_VOLUME_RATIO,
   onePoolPerToken: true,
+  quoteFeesBonus: config.QUOTE_FEES_SCORE_BONUS,
   topN: 10,
   minStableN: 1,
 };
@@ -118,10 +121,13 @@ export function scanOpportunities(
     const sustainabilityScore = norm("sustainabilityRaw", m.sustainabilityRaw);
     const depthScore = norm("depthRaw", m.depthRaw);
 
-    const score =
+    const wsm =
       weights.yield * yieldScore +
       weights.sustainability * sustainabilityScore +
       weights.depth * depthScore;
+    // Bonus fees en quote, en restant dans [0,1] : score = (1−b)·WSM + b·[fees en quote]
+    const b = opts.quoteFeesBonus;
+    const score = (1 - b) * wsm + (m.pool.feesInQuote ? b : 0);
 
     return {
       pool: m.pool,
@@ -210,6 +216,7 @@ function explain(
   if (c.depthScore > 0.7) reasons.push("Liquidité profonde — moindre slippage/risque");
   else if (c.depthScore < 0.3) reasons.push("Liquidité fine — prudence sur la taille");
 
+  if (pool.feesInQuote) reasons.push("Fees versées en SOL/stable (ne suivent pas le memecoin)");
   reasons.push(`Bin step ${pool.binStep} (granularité du range)`);
   return reasons;
 }

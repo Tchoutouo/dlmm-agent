@@ -47,6 +47,8 @@ export interface MeteoraPair {
     base_fee_pct: number;
     max_fee_pct: number;
     protocol_fee_pct: number;
+    /** 0 = InputOnly (fees dans le token d'entrée du swap), 1 = OnlyY (fees en token Y). */
+    collect_fee_mode?: number;
   };
   dynamic_fee_pct: number;
   tvl: number;
@@ -89,6 +91,8 @@ export interface Pool {
   baseMarketCapUsd?: number;
   /** Volume des 4 dernières heures (USD). Absent = inconnu, le filtre ne s'applique pas. */
   volume4h?: number;
+  /** Fees versées uniquement en quote SOL/stable (mode OnlyY avec Y = SOL ou stable). */
+  feesInQuote?: boolean;
 }
 
 /** Poids du modèle de score multi-critères (Weighted Scoring Model). */
