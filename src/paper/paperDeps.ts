@@ -11,7 +11,8 @@ import { ApprovalQueue } from "./approvalQueue.js";
 import { predictForwardVol } from "../ml/volatilityClient.js";
 import { config } from "../config.js";
 import { planPosition } from "../analytics/positionPlan.js";
-import { chooseCoveredPool } from "../analytics/poolChoice.js";
+import { chooseCoveredPool, spotPositionBins, withFeeConcentration } from "../analytics/poolChoice.js";
+import { measureFeeConcentration } from "../data/binLiquidity.js";
 import { MAX_PRICE_DEVIATION } from "../execution/realExecutor.js";
 import { priceDeviation } from "../execution/executionMath.js";
 import type { DeepAnalysis, ScoredOpportunity } from "../types.js";
@@ -30,6 +31,7 @@ export function createPaperDeps(broker: PaperBroker, c: ProductionClients): Orch
     getSnapshot: () => broker.snapshot(),
     amendDecision: (id, decision, note) => c.journal.amendDecision(id, decision, note),
     planPosition: (cand, analysis) => planPosition(config.PAPER_STRATEGY, cand.pool, analysis.suggestedRange),
+    getFeeConcentration: config.MAX_FEE_CONCENTRATION > 0 ? measureFeeConcentration : undefined,
     recordDecision: (d) =>
       c.journal.record({
         timestamp: new Date().toISOString(),
@@ -59,7 +61,7 @@ export function createPaperDeps(broker: PaperBroker, c: ProductionClients): Orch
         entryPrice: candidate.pool.currentPrice,
         rangeLow: plan.rangeLow,
         rangeHigh: plan.rangeHigh,
-        feeAprAnnual: feeAprProxy(candidate.pool),
+        feeAprAnnual: candidate.estimatedFeeApr, // APR de la pool × part réelle des fees
         nowSec: Math.floor(Date.now() / 1000),
         shape: plan.shape,
         binStep: candidate.pool.binStep,
@@ -154,8 +156,14 @@ export async function openApprovedProposals(
         estimatedFeeApr: feeAprProxy(fresh),
         reasons: [],
       };
-      analysis = deepAnalyze(candidate, await c.data.getOhlcv(fresh.address, "1h", 168));
+      const freshCandles = await c.data.getOhlcv(fresh.address, "1h", 168);
+      analysis = deepAnalyze(candidate, freshCandles);
       quoteUsd = await c.oracle.getUsdPrice(fresh.mintY);
+      if (config.MAX_FEE_CONCENTRATION > 0) {
+        const base = { opportunity: candidate, analysis, coverage: 0 };
+        const raw = await measureFeeConcentration(fresh, quoteUsd, spotPositionBins(base));
+        ({ opportunity: candidate, analysis } = withFeeConcentration(base, freshCandles, raw));
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.log(`  ⏭️  ${a.poolName} : revalidation impossible (${msg.slice(0, 60)}) — nouvel essai au prochain tick`);
@@ -212,7 +220,7 @@ export async function openApprovedProposals(
       entryPrice: pool.currentPrice,
       rangeLow: plan.rangeLow,
       rangeHigh: plan.rangeHigh,
-      feeAprAnnual: feeAprProxy(pool),
+      feeAprAnnual: candidate.estimatedFeeApr,
       nowSec,
       shape: plan.shape,
       binStep: pool.binStep,
@@ -255,9 +263,15 @@ export async function paperTickSupervised(
     try {
       const candles = await c.data.getOhlcv(scanned.pool.address, "1h", 168);
       // Pool du token dont le bin step couvre le mieux la volatilité
-      const { opportunity: cand, analysis } = chooseCoveredPool(scanned, candles);
-      if (queue.hasOpenProposal(cand.pool.address)) continue; // déjà proposée, en attente
-      const quoteProfile = buildQuoteProfile(cand.pool.mintY, await c.oracle.getUsdPrice(cand.pool.mintY));
+      let choice = chooseCoveredPool(scanned, candles);
+      if (queue.hasOpenProposal(choice.opportunity.pool.address)) continue; // déjà proposée, en attente
+      const quoteUsd = await c.oracle.getUsdPrice(choice.opportunity.pool.mintY);
+      if (config.MAX_FEE_CONCENTRATION > 0) {
+        const raw = await measureFeeConcentration(choice.opportunity.pool, quoteUsd, spotPositionBins(choice));
+        choice = withFeeConcentration(choice, candles, raw);
+      }
+      const { opportunity: cand, analysis } = choice;
+      const quoteProfile = buildQuoteProfile(cand.pool.mintY, quoteUsd);
       const plan = planPosition(config.PAPER_STRATEGY, cand.pool, analysis.suggestedRange);
       const risk = assessRisk(cand, analysis, snapshot, undefined, quoteProfile, plan);
       if (risk.verdict === "APPROVE" || risk.verdict === "APPROVE_REDUCED") {
@@ -270,7 +284,7 @@ export async function paperTickSupervised(
           rangeLow: plan.rangeLow,
           rangeHigh: plan.rangeHigh,
           sizeUsd: risk.recommendedSizeUsd,
-          feeAprAnnual: feeAprProxy(cand.pool),
+          feeAprAnnual: cand.estimatedFeeApr,
           verdict: risk.verdict,
           volAnnual: analysis.volatility.sigmaAnnual,
           regime: analysis.feeRegime.label,

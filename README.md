@@ -65,6 +65,7 @@ une approbation (`npm approve-scripts`) ; les tests vérifient que SQLite foncti
 | `npm run backtest:sltp [-- <pools>]` | Compare 7 couples stop-loss / take-profit | lecture |
 | `npm run backtest:strategy [-- <pools>]` | Compare spot, bid-ask et bid-ask après une chute | lecture |
 | `npm run backtest:pools [-- <n>]` | Compare la pool la plus profonde et la pool au bin step adapté (fees / IL / marché) | lecture |
+| `npm run backtest:periods [-- <jours> <tokens>]` | Mesure de référence : plusieurs fenêtres de 30 jours, modèle de fees, coûts, durée de détention | lecture (+ RPC mainnet en lecture) |
 | `npm run whales -- <pool>` | Gros swaps récents d'une pool | lecture RPC |
 | `npm run check` | Soldes du wallet configuré | lecture RPC |
 | `npm run devnet:wallet` · `devnet:check` · `devnet:run` | Wallet de test devnet, airdrop, test bout-en-bout | devnet |
@@ -101,6 +102,17 @@ souvent plusieurs pools (bin steps 20, 50, 100…) : le scanner les garde comme
 mieux la volatilité du token parmi celles dont l'APR net reste suffisant. Le
 contrôle `MIN_RANGE_COVERAGE_PCT` écarte ensuite les positions encore trop
 étroites.
+
+**Part réelle des fees.** Une position DLMM ne touche des fees que dans SES bins,
+au prorata de sa liquidité face à celle des autres LP de ces bins — pas selon sa
+part de la TVL totale. L'analyse lit donc on-chain (RPC mainnet de lecture,
+`MAINNET_READ_RPC_URL`) la liquidité des bins proches du prix et en déduit un
+**facteur de concentration** : de 0,35 (LP concurrents très concentrés près du
+prix) à 13 (liquidité clairsemée), médiane ≈ 2 sur 25 pools mesurées en octobre
+2026. Ce facteur, **plafonné à `MAX_FEE_CONCENTRATION` (2)** par prudence,
+multiplie l'APR de fees attendu : il pèse sur l'APR net, donc sur le verdict du
+risque, et favorise les pools où la concurrence est faible (lecture de la
+« liquidity distribution »). Le facteur appliqué est tracé au journal.
 
 **Score** : moyenne pondérée de trois critères normalisés — rendement (fees/TVL),
 soutenabilité (volume/liquidité), profondeur (liquidité en log). Les pools qui
@@ -302,10 +314,33 @@ couverture. `npm run backtest:pools` (14 tokens, 30 jours, octobre 2026, SOL −
 | au bin step adapté, veto < 50 % (défaut) | −9 $ | −162 $ | −171 $ | −1,22 % |
 
 Choisir le bin step adapté supprime presque toute la perte propre au LP ; la
-perte restante vient du marché (SOL et memecoins en baisse sur la période). **La
-stratégie n'est donc pas encore rentable** : elle ne le deviendra qu'avec un
-marché porteur, une couverture de l'exposition, ou une sélection de pools moins
-exposées — à valider en backtest avant tout capital.
+perte restante vient du marché (SOL et memecoins en baisse sur la période).
+
+### Mesure de référence : six mois, coûts compris
+
+`npm run backtest:periods` rejoue six fenêtres de 30 jours (avril → octobre 2026,
+SOL de −16 % à +30 %), en choisissant la pool de chaque token avec la volatilité
+mesurée **avant** chaque fenêtre, avec le modèle de fees calibré on-chain et un
+coût d'aller-retour (`BACKTEST_TRADE_COST_PCT`, 0,2 %) :
+
+| Variante | Trades | Avantage net (fees + IL − coûts) | Fenêtres positives |
+|---|---|---|---|
+| modèle de base, sans coût (ancienne mesure) | 762 | −106 $ (−0,14 %/trade) | 1/6 |
+| calibré, sans coût | 1 078 | −43 $ (−0,04 %/trade) | 1/6 |
+| **calibré, coût 0,2 %, 1 jour (défaut)** | 1 078 | **−254 $ (−0,24 %/trade)** | 1/6 |
+| calibré, coût 0,2 %, 3 jours | 344 | −91 $ (−0,27 %/trade) | 2/6 |
+
+Par catégorie (variante par défaut), seuls les **blue chips cotés en SOL** (XMR,
+ZEC, ETH, cbBTC…) gardent un avantage net positif après coûts : **+0,42 % par
+trade** sur 121 trades — déjà positifs avec le modèle de base. Altcoins et blue
+chips cotés en stable restent négatifs (−0,21 % à −0,43 %).
+
+Le modèle calibré augmente les fees attendues, donc le nombre d'entrées approuvées
+(762 → 1 078) : les entrées supplémentaires, marginales, perdent davantage en IL
+que ce que l'analyse anticipe. **En l'état, la stratégie n'a pas d'avantage net
+positif sur l'ensemble des pools** ; la piste la plus solide est de la restreindre
+aux blue chips cotés en SOL et de recalibrer l'IL attendu, à valider en paper
+trading avant tout capital.
 
 ## Paper trading (dernier filtre avant tout capital)
 

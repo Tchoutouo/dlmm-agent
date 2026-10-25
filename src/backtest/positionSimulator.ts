@@ -14,6 +14,8 @@ export interface SimulatedOutcome {
    * hodlChange = mouvement du marché, que tout détenteur aurait subi.
    */
   hodlChangeUsd: number;
+  /** Coût de l'aller-retour (swaps d'entrée/sortie, frais réseau), déduit du PnL. */
+  tradeCostUsd: number;
   wentOutOfRange: boolean;
   fractionInRange: number;
   holdingDays: number;
@@ -41,6 +43,13 @@ export interface SimulateInput {
    * sinon, repli sur l'APR constant `feeAprAnnual`.
    */
   feeShareOfVolume?: number;
+  /**
+   * Facteur de concentration des fees (part réelle des fees de la position face à
+   * sa part de TVL, voir feeConcentration.ts). 1 par défaut (modèle de base).
+   */
+  feeConcentration?: number;
+  /** Coût d'un aller-retour en % de la taille (swaps, frais réseau). 0 par défaut. */
+  tradeCostPct?: number;
   /**
    * Prix USD du quote, à l'entrée puis à chaque bougie forward (même longueur).
    * La valeur LP, calculée en unités de quote, est convertie en USD par leur
@@ -81,6 +90,7 @@ export function simulatePosition(input: SimulateInput): SimulatedOutcome {
       valueChangeUsd: 0,
       realizedPnlUsd: 0,
       hodlChangeUsd: 0,
+      tradeCostUsd: 0,
       wentOutOfRange: false,
       fractionInRange: 0,
       holdingDays: 0,
@@ -90,8 +100,12 @@ export function simulatePosition(input: SimulateInput): SimulatedOutcome {
 
   // Fees gagnées par bougie passée dans le range (pondérées par la liquidité
   // du bin actif pour une bid-ask)
-  const share = input.feeShareOfVolume ?? 0;
-  const aprFeePerCandleUsd = sizeUsd * feeAprAnnual * (candleSeconds / 86_400 / 365);
+  const k = input.feeConcentration ?? 1;
+  const share = (input.feeShareOfVolume ?? 0) * k;
+  const aprFeePerCandleUsd = sizeUsd * feeAprAnnual * k * (candleSeconds / 86_400 / 365);
+  // Payé dès l'entrée (swaps vers les tokens de la pool) et à la sortie : compté
+  // dans le PnL dès la première bougie, donc aussi dans les seuils TP/SL.
+  const tradeCostUsd = sizeUsd * ((input.tradeCostPct ?? 0) / 100);
   const feeOfCandle = (c: Candle) => (share > 0 ? sizeUsd * c.volume * share : aprFeePerCandleUsd);
   const layout =
     input.shape === "sol_bidask" && input.binStep ? bidAskLayout(range.priceLow, range.priceHigh, input.binStep) : null;
@@ -123,7 +137,7 @@ export function simulatePosition(input: SimulateInput): SimulatedOutcome {
 
     exitPrice = c.close;
     valueChangeUsd = sizeUsd * (valueRatio(exitPrice) * quoteFactor(k) - 1);
-    const pnlPct = sizeUsd > 0 ? ((valueChangeUsd + feesEarnedUsd) / sizeUsd) * 100 : 0;
+    const pnlPct = sizeUsd > 0 ? ((valueChangeUsd + feesEarnedUsd - tradeCostUsd) / sizeUsd) * 100 : 0;
 
     if (tp > 0 && pnlPct >= tp) {
       exitReason = "take_profit";
@@ -148,8 +162,9 @@ export function simulatePosition(input: SimulateInput): SimulatedOutcome {
     exitPrice,
     feesEarnedUsd,
     valueChangeUsd,
-    realizedPnlUsd: valueChangeUsd + feesEarnedUsd,
+    realizedPnlUsd: valueChangeUsd + feesEarnedUsd - tradeCostUsd,
     hodlChangeUsd,
+    tradeCostUsd,
     wentOutOfRange,
     fractionInRange: inRange / held,
     holdingDays: (held * candleSeconds) / 86_400,

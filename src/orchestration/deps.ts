@@ -3,6 +3,7 @@ import type {
   DeepAnalysis,
   DecisionType,
   DecisionFeatures,
+  Pool,
   PortfolioSnapshot,
   RiskAssessment,
   RiskVerdict,
@@ -57,6 +58,12 @@ export interface OrchestratorDeps {
    * côté). Absent = spot sur le range suggéré par l'analyse.
    */
   planPosition?(candidate: ScoredOpportunity, analysis: DeepAnalysis): PositionPlan;
+  /**
+   * Optionnel : facteur de concentration des fees BRUT de la pool (part réelle
+   * des fees d'une position de `positionBins` bins face à sa part de TVL), lu
+   * on-chain. Plafonné ensuite par appliedFeeFactor. Absent = modèle de base.
+   */
+  getFeeConcentration?(pool: Pool, quoteUsd: number, positionBins: number): Promise<number | null>;
   /** Optionnel (couche ML) : vol journalière future prédite pour dimensionner le range. */
   getForwardVol?(poolAddress: string, candles: Candle[]): Promise<number | null>;
   /** Persiste la décision ; renvoie l'id du journal si applicable. */

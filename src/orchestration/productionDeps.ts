@@ -5,6 +5,7 @@ import { Portfolio } from "../portfolio/portfolio.js";
 import { TradeJournal } from "../journal/journal.js";
 import { scanOpportunities, isStablePool, STABLE_MINTS } from "../analytics/opportunityScanner.js";
 import { planPosition } from "../analytics/positionPlan.js";
+import { measureFeeConcentration } from "../data/binLiquidity.js";
 import { predictForwardVol } from "../ml/volatilityClient.js";
 import { loadWallet } from "../execution/wallet.js";
 import { RealExecutor } from "../execution/realExecutor.js";
@@ -116,6 +117,8 @@ export function createProductionDeps(c: ProductionClients): OrchestratorDeps {
     // Live : photo on-chain (cash déployable = SOL + stables ; autres tokens = inventaire
     // exposé). Si elle est indisponible, le scan échoue plutôt que de trader à l'aveugle.
     getSnapshot: () => (manager ? manager.realSnapshot() : c.portfolio.snapshot()),
+    // Part réelle des fees de la position, lue on-chain (MAX_FEE_CONCENTRATION = 0 : désactivé)
+    getFeeConcentration: config.MAX_FEE_CONCENTRATION > 0 ? measureFeeConcentration : undefined,
     // Le risque évalue la position que l'exécuteur ouvrira réellement (spot, ≤ 69 bins)
     planPosition: (cand, analysis) => planPosition("spot", cand.pool, analysis.suggestedRange),
     recordDecision: (d) =>

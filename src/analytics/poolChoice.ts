@@ -4,6 +4,8 @@ import { feeAprProxy } from "./feeApr.js";
 import { planPosition } from "./positionPlan.js";
 import { rangeCoverage } from "../risk/riskAgent.js";
 import { config } from "../config.js";
+import { appliedFeeFactor } from "./feeConcentration.js";
+import { binRangeForPrices } from "../execution/executionMath.js";
 
 export interface PoolChoice {
   opportunity: ScoredOpportunity;
@@ -66,4 +68,38 @@ export function chooseCoveredPool(
       ? c
       : best
   );
+}
+
+/** Nombre de bins de la position spot exécutable pour cette analyse. */
+export function spotPositionBins(choice: Pick<PoolChoice, "opportunity" | "analysis">): number {
+  const { pool } = choice.opportunity;
+  const plan = planPosition("spot", pool, choice.analysis.suggestedRange);
+  const { minBinId, maxBinId } = binRangeForPrices(0, pool.currentPrice, plan.rangeLow, plan.rangeHigh, pool.binStep);
+  return maxBinId - minBinId + 1;
+}
+
+/**
+ * Applique le facteur de concentration mesuré (`rawFactor`, plafonné par
+ * appliedFeeFactor) à l'APR de fees attendu, et refait l'analyse : l'APR net,
+ * donc le verdict du risque, reflète la part réelle des fees de la position.
+ */
+export function withFeeConcentration(
+  choice: PoolChoice,
+  candles: Candle[],
+  rawFactor: number | null | undefined,
+  options: DeepAnalysisOptions = {}
+): PoolChoice {
+  const k = appliedFeeFactor(rawFactor);
+  if (k === 1) return choice;
+  const note =
+    `Part réelle des fees ×${k.toFixed(2)} (liquidité concurrente près du prix, mesurée on-chain` +
+    (rawFactor && rawFactor > k ? ` : ×${rawFactor.toFixed(2)}, plafonné)` : ")");
+  const opportunity: ScoredOpportunity = {
+    ...choice.opportunity,
+    estimatedFeeApr: choice.opportunity.estimatedFeeApr * k,
+    reasons: [...choice.opportunity.reasons, note],
+  };
+  const analysis = deepAnalyze(opportunity, candles, options);
+  // Tracé au journal (rationale de l'analyse) : le facteur appliqué reste auditable
+  return { ...choice, opportunity, analysis: { ...analysis, rationale: [...analysis.rationale, note] } };
 }

@@ -102,6 +102,15 @@ const schema = z.object({
   // petit pour la volatilité : la position sort du range et l'IL dépasse les fees.
   // 0 = contrôle désactivé.
   MIN_RANGE_COVERAGE_PCT: z.coerce.number().min(0).max(100).default(50),
+  // Modèle de fees calibré on-chain : une position touche les fees de SES bins,
+  // pas sa part de TVL. Le facteur mesuré (liquidité près du prix) est plafonné
+  // à MAX_FEE_CONCENTRATION par prudence. 0 = modèle de base (part de TVL).
+  MAX_FEE_CONCENTRATION: z.coerce.number().min(0).default(2),
+  // RPC mainnet de LECTURE (liquidité des bins), distinct du RPC d'exécution.
+  MAINNET_READ_RPC_URL: z.string().url().default("https://api.mainnet-beta.solana.com"),
+  // Backtest : coût d'un aller-retour (swaps pour entrer/sortir de la pool, frais
+  // réseau), en % de la taille, prélevé sur chaque position simulée.
+  BACKTEST_TRADE_COST_PCT: z.coerce.number().min(0).default(0.2),
   // Durée de vie d'une proposition du mode supervisé (minutes) : au-delà, elle expire
   // même approuvée. Avant toute ouverture, l'agent la revalide (prix, risque).
   APPROVAL_TTL_MIN: z.coerce.number().positive().default(120),

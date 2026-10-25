@@ -236,6 +236,8 @@ export interface JournalEntry {
   holdingDays?: number;
   /** Backtest : variation de la simple détention des tokens déposés (mouvement du marché). */
   hodlChangeUsd?: number;
+  /** Backtest : coût de l'aller-retour (swaps, frais réseau) déduit du PnL. */
+  tradeCostUsd?: number;
   /** Motif de sortie (backtest) : fin de fenêtre, take-profit ou stop-loss. */
   exitReason?: "horizon" | "take_profit" | "stop_loss";
   outcomeNotes?: string;

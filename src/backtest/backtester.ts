@@ -13,6 +13,7 @@ import { deepAnalyze } from "../analytics/deepAnalysis.js";
 import { buildQuoteProfile } from "../analytics/quoteRisk.js";
 import { assessRisk, riskParamsFromConfig } from "../risk/riskAgent.js";
 import { simulatePosition } from "./positionSimulator.js";
+import { config } from "../config.js";
 import { planPosition, recentDropPct, type DipRule, type PositionShape } from "../analytics/positionPlan.js";
 import type { QuoteUsdAt } from "./quoteHistory.js";
 
@@ -32,6 +33,13 @@ export interface BacktestOptions {
   stopLossPct?: number;
   /** Forme des positions simulées (défaut spot). */
   strategy?: PositionShape;
+  /**
+   * Facteur de concentration des fees de la pool (mesuré on-chain, plafonné par
+   * appliedFeeFactor). 1 par défaut : modèle de base « part de TVL ».
+   */
+  feeConcentration?: number;
+  /** Coût d'un aller-retour en % de la taille (défaut BACKTEST_TRADE_COST_PCT). */
+  tradeCostPct?: number;
   /** Historique du prix USD du quote (valorisation USD des pools TOKEN/SOL). */
   quoteUsdAt?: QuoteUsdAt;
   /**
@@ -111,7 +119,7 @@ export function runBacktest(pool: Pool, candles: Candle[], options: BacktestOpti
       pool: poolNow,
       score: 0.5,
       components: { yieldScore: 0.5, sustainabilityScore: 0.5, depthScore: 0.5 },
-      estimatedFeeApr: trailingFeeApr(poolNow, trailing, candleSeconds),
+      estimatedFeeApr: trailingFeeApr(poolNow, trailing, candleSeconds) * (options.feeConcentration ?? 1),
       reasons: [],
     };
 
@@ -160,6 +168,8 @@ export function runBacktest(pool: Pool, candles: Candle[], options: BacktestOpti
         quoteUsdPath: options.quoteUsdAt ? forward.map((c) => options.quoteUsdAt!(c.timestamp)) : undefined,
         feeAprAnnual: opportunity.estimatedFeeApr,
         feeShareOfVolume: feeShareOfVolume(pool),
+        feeConcentration: options.feeConcentration,
+        tradeCostPct: options.tradeCostPct ?? config.BACKTEST_TRADE_COST_PCT,
         forwardCandles: forward,
         candleSeconds,
         takeProfitPct: options.takeProfitPct,
@@ -177,6 +187,7 @@ export function runBacktest(pool: Pool, candles: Candle[], options: BacktestOpti
       e.holdingDays = sim.holdingDays;
       e.exitReason = sim.exitReason;
       e.hodlChangeUsd = sim.hodlChangeUsd;
+      e.tradeCostUsd = sim.tradeCostUsd;
       e.rangeLow = plan.rangeLow;
       e.rangeHigh = plan.rangeHigh;
       entries.push(e);

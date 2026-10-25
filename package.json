@@ -14,6 +14,7 @@
     "backtest:sltp": "tsx src/backtest-sltp.ts",
     "backtest:strategy": "tsx src/backtest-strategy.ts",
     "backtest:pools": "tsx src/backtest-pools.ts",
+    "backtest:periods": "tsx src/backtest-periods.ts",
     "execute": "tsx src/execute.ts",
     "live": "tsx src/live.ts",
     "whales": "tsx src/whales.ts",
