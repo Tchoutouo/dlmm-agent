@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { MemorySaver, Command } from "@langchain/langgraph";
 import { buildOrchestrator } from "../src/orchestration/graph.js";
+import { config } from "../src/config.js";
 import type { OrchestratorDeps, DecisionRecord, Proposal } from "../src/orchestration/deps.js";
 import type { Candle, Pool, ScoredOpportunity } from "../src/types.js";
 
@@ -117,11 +118,21 @@ describe("orchestrateur — mode autonome", () => {
 
   it("traite plusieurs candidates à la suite", async () => {
     const { deps } = makeDeps({
-      candidates: [candidate("A", 0.6), candidate("B", 0.6), candidate("C", 0.0)],
+      candidates: [candidate("A", 0.0), candidate("B", 0.0), candidate("C", 0.0)],
     });
     const graph = buildOrchestrator(deps).compile();
     const out = await graph.invoke({ mode: "autonomous" });
-    expect(out.decisions.length).toBe(3); // A, B, C tous traités
+    expect(out.decisions.map((d) => d.poolName)).toEqual(["A", "B", "C"]); // tous traités (SKIP)
+  });
+
+  it("s'arrête au plafond MAX_POSITIONS_PER_SCAN", async () => {
+    const names = ["A", "B", "C", "D", "E", "F"];
+    const { deps, executed } = makeDeps({ candidates: names.map((n) => candidate(n, 0.6)) });
+    const graph = buildOrchestrator(deps).compile();
+    const out = await graph.invoke({ mode: "autonomous" });
+    // Toutes approuvables, mais la boucle s'arrête dès le plafond atteint
+    expect(executed.length).toBe(config.MAX_POSITIONS_PER_SCAN);
+    expect(out.decisions.length).toBe(config.MAX_POSITIONS_PER_SCAN);
   });
 });
 
