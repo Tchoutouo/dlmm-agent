@@ -131,7 +131,7 @@ export function runMultiBacktest(
         reasons: [],
       };
       try {
-        const analysis = deepAnalyze(opportunity, trailing, { timeframe });
+        const analysis = deepAnalyze(opportunity, trailing, { timeframe, horizonDays: (window * candleSeconds) / 86_400 });
         analyzed.push({ idx: p, poolNow, opportunity, analysis });
       } catch {
         /* pas assez de bougies */

@@ -1,6 +1,7 @@
 import type { Pool, ScoredOpportunity, ScoringWeights } from "../types.js";
 import { feeAprProxy, capitalTurnover } from "./feeApr.js";
 import { config } from "../config.js";
+import { bluechipMints, inUniverse, type PoolUniverse } from "./poolUniverse.js";
 
 /** Poids par défaut du WSM (somme = 1). Ajustables par l'agent superviseur. */
 export const DEFAULT_WEIGHTS: ScoringWeights = {
@@ -43,6 +44,8 @@ export interface ScanOptions {
   quoteFeesBonus?: number;
   /** Écarter les copies : même symbole qu'un token à plus grosse market cap. */
   excludeTokenCopies?: boolean;
+  /** Univers de pools (POOL_UNIVERSE) : s'applique aussi aux pools alternatives. */
+  universe?: PoolUniverse;
   /** Nombre total d'opportunités à renvoyer. */
   topN?: number;
   /**
@@ -62,6 +65,7 @@ const DEFAULTS: Required<Omit<ScanOptions, "weights">> = {
   onePoolPerToken: true,
   quoteFeesBonus: config.QUOTE_FEES_SCORE_BONUS,
   excludeTokenCopies: config.EXCLUDE_TOKEN_COPIES,
+  universe: config.POOL_UNIVERSE,
   topN: 10,
   minStableN: 1,
 };
@@ -85,11 +89,13 @@ export function scanOpportunities(
   // Copies détectées sur tout l'univers fourni (avant les autres filtres, pour
   // reconnaître l'original même s'il est lui-même écarté ensuite)
   const copies = opts.excludeTokenCopies ? findTokenCopies(pools) : new Set<string>();
+  const bluechips = bluechipMints();
 
   // 1. Filtrage (les champs absents = inconnus → filtre non appliqué)
-  //    - sécurité : blacklist, copies, vérification, liquidité, volume, market cap
+  //    - sécurité : univers, blacklist, copies, vérification, liquidité, volume, market cap
   //    - activité : volume ≥ TVL, volume récent encore actif
   const safe = (p: Pool) => {
+    if (!inUniverse(p, opts.universe, bluechips)) return false;
     if (p.isBlacklisted) return false;
     if (p.baseMint && copies.has(p.baseMint)) return false;
     if (opts.verifiedOnly && !p.isVerified) return false;

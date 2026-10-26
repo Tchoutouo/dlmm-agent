@@ -3,6 +3,7 @@ import { simulatePosition } from "../src/backtest/positionSimulator.js";
 import { runBacktest } from "../src/backtest/backtester.js";
 import { feeShareOfVolume, trailingFeeApr } from "../src/analytics/feeApr.js";
 import { recentDropPct } from "../src/analytics/positionPlan.js";
+import { riskParamsFromConfig } from "../src/risk/riskAgent.js";
 import type { Candle, Pool } from "../src/types.js";
 
 const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -230,7 +231,10 @@ describe("entrée après une chute (dipRule)", () => {
     for (let i = 0; i < 72; i++) closes.push(100 + Math.sin(i / 5) * 0.3);
     for (let i = 1; i <= 6; i++) closes.push(100 * (1 - 0.025 * i));
     for (let i = 0; i < 60; i++) closes.push(85 + i * 0.2);
-    const opts = { timeframe: "1h" as const, lookbackCandles: 48, windowCandles: 24, initialCashUsd: 1000 };
+    // Le test porte sur le moment d'entrée : veto d'APR net neutralisé (après une
+    // chute de 15 %, l'IL attendu sur la vol réalisée dépasse les fees du fixture).
+    const params = { ...riskParamsFromConfig(), minNetApr: -Infinity };
+    const opts = { timeframe: "1h" as const, lookbackCandles: 48, windowCandles: 24, initialCashUsd: 1000, params };
     const res = runBacktest(pool(), path(closes), {
       ...opts,
       strategy: "sol_bidask",

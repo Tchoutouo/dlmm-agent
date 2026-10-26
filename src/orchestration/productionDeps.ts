@@ -65,7 +65,7 @@ export function createProductionDeps(c: ProductionClients): OrchestratorDeps {
       // pas de SOL côté dépôt — évite des tentatives vouées à l'échec.
       if (!config.AUTO_SWAP && wallet) {
         const solLamports = await wallet.connection.getBalance(wallet.keypair.publicKey);
-        if (solLamports < 0.15 * 1e9) {
+        if (solLamports < 0.15 * 1e9 && config.POOL_UNIVERSE === "all") {
           const stablePairs = allPairs.filter((p) => isStablePool(p));
           if (stablePairs.length >= 2) {
             console.log(
@@ -82,8 +82,11 @@ export function createProductionDeps(c: ProductionClients): OrchestratorDeps {
       // Scan stable dédié avec seuils assouplis :
       // Les pools USDC-USDT ont un volume24h faible (prix stable → peu d'arbitrage)
       // et peuvent ne pas être "verified" dans l'API Meteora → on abaisse les seuils.
-      const stablePools = allPairs.filter((p) => isStablePool(p));
-      console.log(`  ℹ️  ${stablePools.length} pool(s) stable/stable dans l'univers Meteora`);
+      // (Hors univers "all", POOL_UNIVERSE exclut les stables : scan sauté.)
+      const stablePools = config.POOL_UNIVERSE === "all" ? allPairs.filter((p) => isStablePool(p)) : [];
+      if (config.POOL_UNIVERSE === "all") {
+        console.log(`  ℹ️  ${stablePools.length} pool(s) stable/stable dans l'univers Meteora`);
+      }
       const stableCandidates = scanOpportunities(stablePools, {
         topN: 3,
         minStableN: 3,

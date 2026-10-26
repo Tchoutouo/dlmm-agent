@@ -6,6 +6,7 @@ import { scanOpportunities, isStablePool } from "./analytics/opportunityScanner.
 import { quoteIsSolOrStable } from "./analytics/positionPlan.js";
 import { chooseCoveredPool, spotPositionBins } from "./analytics/poolChoice.js";
 import { appliedFeeFactor } from "./analytics/feeConcentration.js";
+import { bluechipMints, type PoolUniverse } from "./analytics/poolUniverse.js";
 import { runBacktest } from "./backtest/backtester.js";
 import { quoteUsdLookup, type QuoteUsdAt } from "./backtest/quoteHistory.js";
 import { config } from "./config.js";
@@ -15,7 +16,8 @@ import type { Candle, JournalEntry, Pool, ScoredOpportunity } from "./types.js";
  * Mesure de référence de la stratégie : plusieurs fenêtres de 30 jours, sans
  * anticipation (la pool de chaque token est choisie avec la volatilité mesurée
  * juste AVANT la fenêtre), décomposée en fees / IL face à la détention / marché /
- * coûts, et comparée selon le modèle de fees, les coûts et la durée de détention.
+ * coûts, et comparée selon l'univers de pools (POOL_UNIVERSE), le modèle de fees,
+ * les coûts et la durée de détention.
  *
  *   npm run backtest:periods             # 180 jours, 30 tokens
  *   npm run backtest:periods -- 120 20   # jours, tokens
@@ -27,11 +29,12 @@ import type { Candle, JournalEntry, Pool, ScoredOpportunity } from "./types.js";
  */
 
 const WINDOW_DAYS = 30;
-const BLUECHIP = /^(SOL|W?ETH|[A-Z]*BTC|ZEC|XMR|JUP|JITOSOL|MSOL|BSOL|INF|JLP)$/i;
+const BLUECHIPS = bluechipMints();
 
+/** Catégorie de la pool ; blue chip identifié par mint (SOL compris), pas par symbole. */
 function category(p: Pool): string {
   if (isStablePool(p)) return "stable/stable";
-  const kind = BLUECHIP.test(p.baseSymbol ?? "") ? "blue chip" : "altcoin";
+  const kind = p.baseMint && (p.baseMint === SOL_MINT || BLUECHIPS.has(p.baseMint)) ? "blue chip" : "altcoin";
   return kind + (STABLE_MINTS.has(p.mintY) || STABLE_MINTS.has(p.mintX) ? "/stable" : "/SOL");
 }
 
@@ -50,13 +53,21 @@ async function main() {
   const data = new DataApiClient();
   const oracle = new PriceOracle();
   const universe = await market.getAllPairs();
-  const scanned: ScoredOpportunity[] = [
-    ...scanOpportunities(universe, { topN: 200, minStableN: 0 }).filter((o) => quoteIsSolOrStable(o.pool)).slice(0, tokens),
-    ...scanOpportunities(universe.filter(isStablePool), {
-      topN: 4, minStableN: 4, minVolumeTvlRatio: 0, minRecentVolumeRatio: 0,
-      verifiedOnly: false, minLiquidityUsd: 5_000, minVolume24h: 200,
-    }),
-  ];
+  // Univers « all » : les meilleurs tokens toutes catégories + quelques stables ;
+  // univers « bluechip_sol » : toutes les pools retenues par le scanner ainsi restreint.
+  const scans: Record<PoolUniverse, ScoredOpportunity[]> = {
+    all: [
+      ...scanOpportunities(universe, { topN: 200, minStableN: 0, universe: "all" })
+        .filter((o) => quoteIsSolOrStable(o.pool))
+        .slice(0, tokens),
+      ...scanOpportunities(universe.filter(isStablePool), {
+        topN: 4, minStableN: 4, minVolumeTvlRatio: 0, minRecentVolumeRatio: 0,
+        verifiedOnly: false, minLiquidityUsd: 5_000, minVolume24h: 200, universe: "all",
+      }),
+    ],
+    bluechip_sol: scanOpportunities(universe, { topN: 200, minStableN: 0, universe: "bluechip_sol" }),
+  };
+  const scanned = [...scans.all, ...scans.bluechip_sol];
 
   // Historique horaire (fenêtres + 96 h de chauffe pour la volatilité)
   const hours = days * 24 + 96;
@@ -65,7 +76,10 @@ async function main() {
     if (!candles.has(addr)) candles.set(addr, await data.getOhlcv(addr, "1h", hours).catch(() => []));
     return candles.get(addr)!;
   };
-  console.log(`▶ ${scanned.length} tokens, ${days} jours : chargement de l'historique…`);
+  console.log(
+    `▶ ${scans.all.length} tokens (univers all), ${scans.bluechip_sol.length} (bluechip_sol : ` +
+      `${scans.bluechip_sol.map((o) => o.pool.name).join(", ")}), ${days} jours : chargement de l'historique…`
+  );
   for (const o of scanned) {
     await load(o.pool.address);
     for (const a of o.alternatives ?? []) await load(a.address);
@@ -83,15 +97,17 @@ async function main() {
     start: end - (days - k * WINDOW_DAYS) * 86_400,
     end: end - (days - (k + 1) * WINDOW_DAYS) * 86_400,
   }));
-  const plans: Array<{ window: (typeof windows)[number]; pool: Pool }> = [];
-  for (const w of windows) {
-    for (const o of scanned) {
-      const before = candles.get(o.pool.address)!.filter((c) => c.timestamp < w.start).slice(-96);
-      if (before.length < 48) continue; // pool trop jeune pour cette fenêtre
-      try {
-        plans.push({ window: w, pool: chooseCoveredPool(o, before).opportunity.pool });
-      } catch {
-        /* analyse impossible */
+  const plans: Array<{ universe: PoolUniverse; window: (typeof windows)[number]; pool: Pool }> = [];
+  for (const [u, opportunities] of Object.entries(scans) as Array<[PoolUniverse, ScoredOpportunity[]]>) {
+    for (const w of windows) {
+      for (const o of opportunities) {
+        const before = candles.get(o.pool.address)!.filter((c) => c.timestamp < w.start).slice(-96);
+        if (before.length < 48) continue; // pool trop jeune pour cette fenêtre
+        try {
+          plans.push({ universe: u, window: w, pool: chooseCoveredPool(o, before).opportunity.pool });
+        } catch {
+          /* analyse impossible */
+        }
       }
     }
   }
@@ -118,9 +134,10 @@ async function main() {
       `${(measured[Math.floor(measured.length / 2)] ?? 1).toFixed(2)}, plafond appliqué ${config.MAX_FEE_CONCENTRATION}\n`
   );
 
-  const simulate = (calibrated: boolean, costPct: number, holdDays: number): Trade[] => {
+  const simulate = (u: PoolUniverse, calibrated: boolean, costPct: number, holdDays: number): Trade[] => {
     const trades: Trade[] = [];
-    for (const { window: w, pool } of plans) {
+    for (const { universe: planUniverse, window: w, pool } of plans) {
+      if (planUniverse !== u) continue;
       const cs = candles.get(pool.address)!.filter((c) => c.timestamp >= w.start - 48 * 3600 && c.timestamp < w.end);
       if (cs.length < 72) continue;
       const res = runBacktest(pool, cs, {
@@ -138,7 +155,7 @@ async function main() {
           window: new Date(w.start * 1000).toISOString().slice(0, 10),
           solMove: s0 && s1 ? s1 / s0 - 1 : 0,
           category: category(pool),
-          pool: pool.name,
+          pool: `${pool.name} bs${pool.binStep}`,
           entry,
         });
       }
@@ -154,51 +171,62 @@ async function main() {
     const pnl = total((e) => e.realizedPnlUsd ?? 0);
     const size = total((e) => e.sizeUsd ?? 0);
     const il = pnl + cost - fees - marketMove;
-    return { n: ts.length, fees, il, marketMove, cost, pnl, edge: fees + il - cost, size };
+    const predictedIl = total((e) => (e.estimatedIlPct ?? 0) * (e.sizeUsd ?? 0));
+    return { n: ts.length, fees, il, predictedIl, marketMove, cost, pnl, edge: fees + il - cost, size };
   };
   const usd = (v: number) => v.toFixed(0).padStart(7);
   const pct = (v: number, base: number) => `${((100 * v) / Math.max(1, base)).toFixed(2)} %`.padStart(9);
 
-  console.log("Variante (modèle de fees, coût aller-retour, détention)   trades   fees     IL  marché  coûts    PnL  avantage net  /trade  fenêtres +");
-  const variants: Array<[string, boolean, number, number]> = [
-    ["base, sans coût, 1 j (ancienne mesure)", false, 0, 1],
-    ["calibré, sans coût, 1 j", true, 0, 1],
-    [`calibré, coût ${config.BACKTEST_TRADE_COST_PCT} %, 1 j (défaut)`, true, config.BACKTEST_TRADE_COST_PCT, 1],
-    [`calibré, coût ${config.BACKTEST_TRADE_COST_PCT} %, 3 j`, true, config.BACKTEST_TRADE_COST_PCT, 3],
-    [`calibré, coût ${config.BACKTEST_TRADE_COST_PCT * 2} %, 1 j`, true, config.BACKTEST_TRADE_COST_PCT * 2, 1],
-    [`calibré, coût ${config.BACKTEST_TRADE_COST_PCT * 2} %, 3 j`, true, config.BACKTEST_TRADE_COST_PCT * 2, 3],
+  console.log("Variante (univers, modèle de fees, coût aller-retour, détention)  trades   fees     IL  marché  coûts    PnL  avantage net  /trade  fenêtres +");
+  const cost = config.BACKTEST_TRADE_COST_PCT;
+  const variants: Array<[string, PoolUniverse, boolean, number, number]> = [
+    ["all, base, sans coût, 1 j", "all", false, 0, 1],
+    ["all, calibré, sans coût, 1 j", "all", true, 0, 1],
+    [`all, calibré, coût ${cost} %, 1 j (défaut)`, "all", true, cost, 1],
+    [`all, calibré, coût ${cost} %, 3 j`, "all", true, cost, 3],
+    [`all, calibré, coût ${cost * 2} %, 1 j`, "all", true, cost * 2, 1],
+    ["bluechip_sol, calibré, sans coût, 1 j", "bluechip_sol", true, 0, 1],
+    [`bluechip_sol, calibré, coût ${cost} %, 1 j (défaut)`, "bluechip_sol", true, cost, 1],
+    [`bluechip_sol, calibré, coût ${cost} %, 3 j`, "bluechip_sol", true, cost, 3],
+    [`bluechip_sol, calibré, coût ${cost * 2} %, 1 j`, "bluechip_sol", true, cost * 2, 1],
   ];
-  let reference: Trade[] = [];
-  for (const [label, calibrated, cost, hold] of variants) {
-    const ts = simulate(calibrated, cost, hold);
-    if (label.includes("(défaut)")) reference = ts;
+  const reference: Partial<Record<PoolUniverse, Trade[]>> = {};
+  for (const [label, u, calibrated, c, hold] of variants) {
+    const ts = simulate(u, calibrated, c, hold);
+    if (label.includes("(défaut)")) reference[u] = ts;
     const a = sum(ts);
     const positiveWindows = [...new Set(ts.map((t) => t.window))].filter((w) => sum(ts.filter((t) => t.window === w)).edge > 0).length;
     const windowsCount = new Set(ts.map((t) => t.window)).size;
     console.log(
-      label.padEnd(56) + String(a.n).padStart(7) + usd(a.fees) + usd(a.il) + usd(a.marketMove) + usd(a.cost) + usd(a.pnl) +
+      label.padEnd(64) + String(a.n).padStart(7) + usd(a.fees) + usd(a.il) + usd(a.marketMove) + usd(a.cost) + usd(a.pnl) +
         usd(a.edge).padStart(14) + pct(a.edge, a.size) + `   ${positiveWindows}/${windowsCount}`
     );
   }
 
-  console.log("\nVariante par défaut, par fenêtre");
-  console.log("Début        SOL   trades   fees     IL  marché  coûts    PnL  avantage net  /trade");
-  for (const w of [...new Set(reference.map((t) => t.window))]) {
-    const ts = reference.filter((t) => t.window === w);
-    const a = sum(ts);
+  for (const [u, ref] of Object.entries(reference) as Array<[PoolUniverse, Trade[]]>) {
+    const a = sum(ref);
     console.log(
-      w + `${(ts[0]!.solMove * 100).toFixed(0)} %`.padStart(7) + String(a.n).padStart(8) + usd(a.fees) + usd(a.il) +
-        usd(a.marketMove) + usd(a.cost) + usd(a.pnl) + usd(a.edge).padStart(14) + pct(a.edge, a.size)
+      `\n── Univers ${u}, variante par défaut ── IL prévu par l'analyse ${pct(a.predictedIl, a.size).trim()}/trade, ` +
+        `réalisé ${pct(a.il, a.size).trim()}/trade`
     );
-  }
-  console.log("\nVariante par défaut, par catégorie");
-  console.log("Catégorie           trades   fees     IL  marché  coûts    PnL  avantage net  /trade");
-  for (const c of [...new Set(reference.map((t) => t.category))].sort()) {
-    const a = sum(reference.filter((t) => t.category === c));
-    console.log(
-      c.padEnd(18) + String(a.n).padStart(8) + usd(a.fees) + usd(a.il) + usd(a.marketMove) + usd(a.cost) + usd(a.pnl) +
-        usd(a.edge).padStart(14) + pct(a.edge, a.size)
-    );
+    console.log("Début        SOL   trades   fees     IL  marché  coûts    PnL  avantage net  /trade");
+    for (const w of [...new Set(ref.map((t) => t.window))]) {
+      const ts = ref.filter((t) => t.window === w);
+      const b = sum(ts);
+      console.log(
+        w + `${(ts[0]!.solMove * 100).toFixed(0)} %`.padStart(7) + String(b.n).padStart(8) + usd(b.fees) + usd(b.il) +
+          usd(b.marketMove) + usd(b.cost) + usd(b.pnl) + usd(b.edge).padStart(14) + pct(b.edge, b.size)
+      );
+    }
+    console.log("Catégorie / pool    trades   fees     IL  marché  coûts    PnL  avantage net  /trade");
+    const groups = u === "all" ? (t: Trade) => t.category : (t: Trade) => t.pool;
+    for (const g of [...new Set(ref.map(groups))].sort()) {
+      const b = sum(ref.filter((t) => groups(t) === g));
+      console.log(
+        g.padEnd(18) + String(b.n).padStart(8) + usd(b.fees) + usd(b.il) + usd(b.marketMove) + usd(b.cost) + usd(b.pnl) +
+          usd(b.edge).padStart(14) + pct(b.edge, b.size)
+      );
+    }
   }
   console.log(
     "\nAvantage net = fees + IL face à la détention − coûts : ce que le LP rapporte au-delà du marché." +

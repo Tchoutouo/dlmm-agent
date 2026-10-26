@@ -125,7 +125,7 @@ export function runBacktest(pool: Pool, candles: Candle[], options: BacktestOpti
 
     let analysis;
     try {
-      analysis = deepAnalyze(opportunity, trailing, { timeframe });
+      analysis = deepAnalyze(opportunity, trailing, { timeframe, horizonDays: (window * candleSeconds) / 86_400 });
     } catch {
       continue; // pas assez de bougies pour la volatilité
     }

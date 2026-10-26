@@ -65,7 +65,7 @@ une approbation (`npm approve-scripts`) ; les tests vérifient que SQLite foncti
 | `npm run backtest:sltp [-- <pools>]` | Compare 7 couples stop-loss / take-profit | lecture |
 | `npm run backtest:strategy [-- <pools>]` | Compare spot, bid-ask et bid-ask après une chute | lecture |
 | `npm run backtest:pools [-- <n>]` | Compare la pool la plus profonde et la pool au bin step adapté (fees / IL / marché) | lecture |
-| `npm run backtest:periods [-- <jours> <tokens>]` | Mesure de référence : plusieurs fenêtres de 30 jours, modèle de fees, coûts, durée de détention | lecture (+ RPC mainnet en lecture) |
+| `npm run backtest:periods [-- <jours> <tokens>]` | Mesure de référence : plusieurs fenêtres de 30 jours, univers de pools, modèle de fees, coûts, durée de détention | lecture (+ RPC mainnet en lecture) |
 | `npm run whales -- <pool>` | Gros swaps récents d'une pool | lecture RPC |
 | `npm run check` | Soldes du wallet configuré | lecture RPC |
 | `npm run devnet:wallet` · `devnet:check` · `devnet:run` | Wallet de test devnet, airdrop, test bout-en-bout | devnet |
@@ -91,6 +91,7 @@ traders DLMM et vérifiés sur les données réelles (255 → ~45 pools éligibl
 | `MIN_MARKET_CAP_USD` | `1000000` | market cap du token de base ≥ 1 M$ |
 | `MIN_RECENT_VOLUME_RATIO` | `0.5` | volume des 4 dernières heures (×6) ≥ 50 % du volume 24h : écarte les pools qui s'éteignent |
 | `EXCLUDE_TOKEN_COPIES` | `true` | même symbole qu'un token à plus grosse market cap → copie écartée |
+| `POOL_UNIVERSE` | `all` | `bluechip_sol` : uniquement un token blue chip **coté en SOL** (JUP, cbBTC, WBTC, ETH, ZEC, JLP, LST…) ; alternatives comprises, stables exclues |
 | — | — | **une seule pool par token** — puis l'analyse choisit, parmi ses pools, celle dont le bin step couvre la volatilité (voir ci-dessous) |
 | `MIN_RANGE_COVERAGE_PCT` | `50` | la position exécutable doit couvrir au moins 50 % du range dicté par la volatilité, sinon VETO |
 
@@ -114,6 +115,14 @@ multiplie l'APR de fees attendu : il pèse sur l'APR net, donc sur le verdict du
 risque, et favorise les pools où la concurrence est faible (lecture de la
 « liquidity distribution »). Le facteur appliqué est tracé au journal.
 
+**Univers blue chip / SOL.** Avec `POOL_UNIVERSE=bluechip_sol`, l'agent ne
+considère que les pools « blue chip / SOL », où le token de base fait partie d'une
+**liste de mints** (`src/analytics/poolUniverse.ts`, extensible par
+`BLUECHIP_EXTRA_MINTS`). Le symbole ne suffit pas : l'univers Meteora contient un
+« BTC-SOL » non vérifié dont le mint finit par `pump`. Le filtre s'applique au
+scan, aux pools alternatives du même token, et à la revalidation des
+propositions approuvées.
+
 **Score** : moyenne pondérée de trois critères normalisés — rendement (fees/TVL),
 soutenabilité (volume/liquidité), profondeur (liquidité en log). Les pools qui
 versent leurs fees **en SOL ou en stable** (`collect_fee_mode = OnlyY`) reçoivent un
@@ -123,7 +132,11 @@ memecoin.
 **Analyse** : les frais DLMM sont `f_s = f_b + f_v`, où le frais variable `f_v`
 croît avec la volatilité. La volatilité est donc à double tranchant (plus de fees,
 mais plus d'IL et de sorties de range) : l'agent classe par **APR net d'IL**, pas
-par fee brut. Les tokens à volatilité journalière > 100 % ne font pas planter
+par fee brut. L'IL attendu est celui d'un mouvement de **±1σ sur la durée de
+détention** (`PAPER_HOLDING_DAYS`, σ journalier × √h), calculé sur la position
+**exécutable** (bornée à 69 bins), puis annualisé sur cette durée. Mesuré en
+backtest sur 630 trades, l'IL réalisé vaut 0,9× l'IL ainsi prévu ; l'ancien calcul
+(σ d'un jour annualisé sur un horizon fixe de 7 jours) le sous-estimait 7×. Les tokens à volatilité journalière > 100 % ne font pas planter
 l'analyse : le scénario de baisse est borné et l'Agent 2 rend un VETO motivé.
 
 ## Sécurité & responsabilité
@@ -319,28 +332,38 @@ perte restante vient du marché (SOL et memecoins en baisse sur la période).
 ### Mesure de référence : six mois, coûts compris
 
 `npm run backtest:periods` rejoue six fenêtres de 30 jours (avril → octobre 2026,
-SOL de −16 % à +30 %), en choisissant la pool de chaque token avec la volatilité
+SOL de −17 % à +35 %), en choisissant la pool de chaque token avec la volatilité
 mesurée **avant** chaque fenêtre, avec le modèle de fees calibré on-chain et un
-coût d'aller-retour (`BACKTEST_TRADE_COST_PCT`, 0,2 %) :
+coût d'aller-retour (`BACKTEST_TRADE_COST_PCT`, 0,2 %). Mesure du 26 octobre 2026,
+ancien et nouveau calcul de l'IL attendu sur les mêmes données (33 tokens) :
 
-| Variante | Trades | Avantage net (fees + IL − coûts) | Fenêtres positives |
+| Variante (univers `all`) | Trades | Avantage net (fees + IL − coûts) | Fenêtres positives |
 |---|---|---|---|
-| modèle de base, sans coût (ancienne mesure) | 762 | −106 $ (−0,14 %/trade) | 1/6 |
-| calibré, sans coût | 1 078 | −43 $ (−0,04 %/trade) | 1/6 |
-| **calibré, coût 0,2 %, 1 jour (défaut)** | 1 078 | **−254 $ (−0,24 %/trade)** | 1/6 |
-| calibré, coût 0,2 %, 3 jours | 344 | −91 $ (−0,27 %/trade) | 2/6 |
+| ancien IL (σ 1 j annualisé sur 7 j), coût 0,2 %, 1 jour | 1 010 | −252 $ (−0,26 %/trade) | 1/6 |
+| **IL recalibré, coût 0,2 %, 1 jour (défaut)** | 274 | **+226 $ (+0,84 %/trade)** | 5/6 |
+| IL recalibré, coût 0,4 %, 1 jour | 274 | +172 $ (+0,64 %/trade) | 4/6 |
+| IL recalibré, coût 0,2 %, 3 jours | 97 | +177 $ (+1,85 %/trade) | 2/5 |
+| IL recalibré, modèle de fees de base, sans coût | 200 | +95 $ (+0,48 %/trade) | 2/5 |
 
-Par catégorie (variante par défaut), seuls les **blue chips cotés en SOL** (XMR,
-ZEC, ETH, cbBTC…) gardent un avantage net positif après coûts : **+0,42 % par
-trade** sur 121 trades — déjà positifs avec le modèle de base. Altcoins et blue
-chips cotés en stable restent négatifs (−0,21 % à −0,43 %).
+L'IL attendu correspond désormais à l'IL subi : **−0,66 % prévu contre −0,65 %
+réalisé par trade**. L'agent de risque écarte ainsi les trois quarts des entrées,
+les marginales dont l'IL dépassait les fees. Par catégorie (variante par défaut) :
+altcoins / SOL +1,60 %/trade (123 trades), blue chips / stable +0,62 %, altcoins /
+stable +0,20 %, blue chips / SOL −0,21 %.
 
-Le modèle calibré augmente les fees attendues, donc le nombre d'entrées approuvées
-(762 → 1 078) : les entrées supplémentaires, marginales, perdent davantage en IL
-que ce que l'analyse anticipe. **En l'état, la stratégie n'a pas d'avantage net
-positif sur l'ensemble des pools** ; la piste la plus solide est de la restreindre
-aux blue chips cotés en SOL et de recalibrer l'IL attendu, à valider en paper
-trading avant tout capital.
+**Univers `bluechip_sol`** (ZEC, cbBTC, WBTC, ETH et JUP face à SOL) : 92 trades,
++83 $ (+0,90 %/trade), 3 fenêtres positives sur 6. Mais ZEC-SOL apporte à lui seul
++97 $, les quatre autres pools sont légèrement négatives, et l'IL y est
+sous-estimé (−0,48 % prévu contre −0,66 % réalisé, sur ces pools à petit bin
+step). La restriction n'améliore donc pas la stratégie recalibrée : l'option reste
+désactivée par défaut, disponible pour un profil plus prudent.
+
+Limites : l'essentiel de l'avantage vient de la dernière fenêtre (septembre →
+octobre : +172 $ sur +226 $ ; +54 $ sur 115 trades pour les cinq autres) ; les
+pools sont sélectionnées aujourd'hui (biais de survie, plus fort pour les altcoins
+et les fenêtres récentes) ; le facteur de concentration est mesuré aujourd'hui.
+**L'avantage net devient positif, mais reste à confirmer en paper trading avant
+tout capital.**
 
 ## Paper trading (dernier filtre avant tout capital)
 

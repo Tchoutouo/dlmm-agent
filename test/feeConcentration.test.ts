@@ -97,8 +97,9 @@ describe("withFeeConcentration : APR attendu et verdict ajustés", () => {
 describe("orchestrateur : getFeeConcentration ajuste l'APR de la pool retenue", () => {
   it("l'APR attendu transmis à l'exécution intègre le facteur", async () => {
     let executedApr = 0;
+    const rich = pool({ fees24h: 2_000 }); // fees qui couvrent l'IL attendu sur 1 jour
     const deps: OrchestratorDeps = {
-      scanMarket: async () => [opp(pool())],
+      scanMarket: async () => [opp(rich)],
       getCandles: async () => candles,
       getQuoteUsdPrice: async () => 100,
       getSnapshot: () => ({ navUsd: 1e5, cashUsd: 1e5, deployedUsd: 0, peakNavUsd: 1e5, drawdownPct: 0, positions: [], exposureByPool: {} }),
@@ -108,7 +109,7 @@ describe("orchestrateur : getFeeConcentration ajuste l'APR de la pool retenue", 
     };
     const out = await buildOrchestrator(deps).compile().invoke({ mode: "autonomous" });
     expect(out.decisions[0]!.decision).toBe("ENTER");
-    expect(executedApr).toBeCloseTo(opp(pool()).estimatedFeeApr * 1.5, 10);
+    expect(executedApr).toBeCloseTo(opp(rich).estimatedFeeApr * 1.5, 10);
   });
 });
 

@@ -12,6 +12,7 @@ import { predictForwardVol } from "../ml/volatilityClient.js";
 import { config } from "../config.js";
 import { planPosition } from "../analytics/positionPlan.js";
 import { chooseCoveredPool, spotPositionBins, withFeeConcentration } from "../analytics/poolChoice.js";
+import { inUniverse } from "../analytics/poolUniverse.js";
 import { measureFeeConcentration } from "../data/binLiquidity.js";
 import { MAX_PRICE_DEVIATION } from "../execution/realExecutor.js";
 import { priceDeviation } from "../execution/executionMath.js";
@@ -174,6 +175,13 @@ export async function openApprovedProposals(
     const drift = priceDeviation(pool.currentPrice, a.entryPrice);
     if (drift > MAX_PRICE_DEVIATION) {
       queue.markExpired(a.id, `prix ${(drift * 100).toFixed(1)} % loin du prix approuvé — à revalider`);
+      expired++;
+      continue;
+    }
+
+    // POOL_UNIVERSE a pu être restreint depuis l'approbation
+    if (!inUniverse(pool)) {
+      queue.markExpired(a.id, `hors de l'univers POOL_UNIVERSE=${config.POOL_UNIVERSE}`);
       expired++;
       continue;
     }

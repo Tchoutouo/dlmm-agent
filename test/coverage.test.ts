@@ -65,7 +65,7 @@ describe("chooseCoveredPool : la pool du token au bin step adapté", () => {
 
   it("ignore une alternative sans fees suffisantes si la pool principale en a", () => {
     const deadWide = pool({ address: "dead", binStep: 100, fees24h: 0, volume24h: 10_000 });
-    const calm = volatileCandles(0.002); // la pool principale reste rentable (APR net ≥ minimum)
+    const calm = volatileCandles(0.0005); // la pool principale reste rentable (APR net ≥ minimum)
     expect(chooseCoveredPool(opportunity(pool()), calm).analysis.riskAdjustedNetApr).toBeGreaterThan(0.05);
     const c = chooseCoveredPool(opportunity(pool(), [deadWide]), calm);
     expect(c.opportunity.pool.address).toBe("deep");
