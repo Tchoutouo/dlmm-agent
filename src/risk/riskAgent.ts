@@ -15,6 +15,25 @@ import { config } from "../config.js";
 import { bidAskLayout, bidAskValueRatio } from "../analytics/bidAsk.js";
 import type { PositionPlan } from "../analytics/positionPlan.js";
 
+/**
+ * Part du range dicté par la volatilité (`suggested`) que le range réellement
+ * exécutable couvre : 1 = entièrement, 0,4 = la position ne couvre que 40 % de
+ * l'écart attendu. Mesurée de chaque côté du prix, on retient le plus faible ;
+ * une bid-ask d'un seul côté (`belowOnly`) n'est mesurée que sous le prix.
+ */
+export function rangeCoverage(
+  price: number,
+  suggested: { priceLow: number; priceHigh: number },
+  executable: { priceLow: number; priceHigh: number },
+  belowOnly = false
+): number {
+  const wantUp = suggested.priceHigh / price - 1;
+  const wantDown = 1 - suggested.priceLow / price;
+  const up = belowOnly || wantUp <= 0 ? 1 : Math.min(1, (executable.priceHigh / price - 1) / wantUp);
+  const down = wantDown > 0 ? Math.min(1, (1 - executable.priceLow / price) / wantDown) : 1;
+  return Math.max(0, Math.min(up, down));
+}
+
 /** Convertit les pourcentages de la config en fractions internes. */
 export function riskParamsFromConfig(): RiskParams {
   return {
@@ -29,6 +48,7 @@ export function riskParamsFromConfig(): RiskParams {
     maxVolatilityAnnual: config.MAX_VOLATILITY_ANNUAL_PCT / 100,
     minNetApr: config.MIN_NET_APR_PCT / 100,
     maxStressLoss: config.MAX_STRESS_LOSS_PCT / 100,
+    minRangeCoverage: config.MIN_RANGE_COVERAGE_PCT / 100,
   };
 }
 
@@ -159,6 +179,17 @@ export function assessRisk(
       params.maxStressLoss * 100
     ).toFixed(0)}%`
   ));
+
+  // Le range réellement exécutable couvre-t-il celui dicté par la volatilité ?
+  if (params.minRangeCoverage) {
+    const coverage = rangeCoverage(pool.currentPrice, analysis.suggestedRange, range, plan?.shape === "sol_bidask");
+    checks.push(check(
+      "range_coverage",
+      coverage >= params.minRangeCoverage,
+      `Couverture du range ${(coverage * 100).toFixed(0)}% vs min ${(params.minRangeCoverage * 100).toFixed(0)}%` +
+        ` (bin step ${pool.binStep} : position exécutable trop étroite pour la volatilité)`
+    ));
+  }
 
   checks.push(check(
     "capital_available",

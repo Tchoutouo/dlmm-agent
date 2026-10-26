@@ -8,11 +8,12 @@ import { computeVolatility, detectVolumeAnomalies } from "./volatility.js";
 import { classifyFeeRegime } from "./dlmmFees.js";
 import { concentratedIl, suggestRange } from "./impermanentLoss.js";
 import { netAprAfterIl } from "./feeApr.js";
+import { planPosition } from "./positionPlan.js";
 import { config } from "../config.js";
 
 export interface DeepAnalysisOptions {
   timeframe?: Timeframe;
-  /** Horizon de détention supposé (jours), pour annualiser l'IL. */
+  /** Durée de détention (jours) : horizon du scénario d'IL et de son annualisation. */
   horizonDays?: number;
   /** Nombre d'écarts-types couverts par le range. */
   rangeSigma?: number;
@@ -36,9 +37,11 @@ export function deepAnalyze(
   options: DeepAnalysisOptions = {}
 ): DeepAnalysis {
   const timeframe = options.timeframe ?? "1h";
-  // Horizon de détention depuis la config (défaut 7 j). Un LP statique non rebalancé
-  // ne reincure pas l'IL journalier × 365 fois — on annualise sur l'horizon réel.
-  const horizonDays = options.horizonDays ?? config.HOLDING_HORIZON_DAYS;
+  // Horizon = durée de détention réelle (PAPER_HOLDING_DAYS) : l'IL est subi à
+  // chaque position, donc IL sur h jours / h × 365. L'ancien horizon fixe de 7 j
+  // avec un σ journalier sous-estimait la traînée d'IL ~7× pour des positions
+  // d'un jour (mesuré en backtest : IL réalisé −0,94 %/j contre −0,13 %/j prévu).
+  const horizonDays = options.horizonDays ?? config.PAPER_HOLDING_DAYS;
   const rangeSigma = options.rangeSigma ?? 2;
 
   const pool = opportunity.pool;
@@ -63,30 +66,34 @@ export function deepAnalyze(
   // 4. Range dimensionné sur la vol journalière (couvre ±rangeSigma σ)
   const suggestedRange = suggestRange(price, sizingDailyVol, rangeSigma);
 
-  // 5. IL estimé pour deux scénarios :
-  //    - mouvement de ±1σ journalier (cas courant)
-  //    - mouvement jusqu'au bord du range (cas adverse ~±rangeSigma σ)
+  // 5. IL estimé sur la position EXÉCUTABLE (range spot borné à 69 bins, souvent
+  //    plus étroit que le range suggéré), pour deux scénarios :
+  //    - mouvement de ±1σ sur l'horizon de détention (σ journalier × √h)
+  //    - mouvement jusqu'au bord du range suggéré (cas adverse ~±rangeSigma σ)
+  const plan = planPosition("spot", pool, suggestedRange);
+  const held = { priceLow: plan.rangeLow, priceHigh: plan.rangeHigh };
+  const sigmaHorizon = sizingDailyVol * Math.sqrt(horizonDays);
   const il1Up = concentratedIl({
     entryPrice: price,
-    currentPrice: price * (1 + sizingDailyVol),
-    ...suggestedRange,
+    currentPrice: price * (1 + sigmaHorizon),
+    ...held,
   }).ilPct;
-  // Borné à −99 % : au-delà de 100 % de vol journalière (memecoins), 1 − σ
+  // Borné à −99 % : au-delà de 100 % de vol sur l'horizon (memecoins), 1 − σ
   // rendrait le prix négatif et ferait échouer l'analyse au lieu d'un VETO motivé.
   const il1Down = concentratedIl({
     entryPrice: price,
-    currentPrice: price * Math.max(1 - sizingDailyVol, 0.01),
-    ...suggestedRange,
+    currentPrice: price * Math.max(1 - sigmaHorizon, 0.01),
+    ...held,
   }).ilPct;
   const ilAt1Sigma = (il1Up + il1Down) / 2;
 
   const ilAtRangeEdge = concentratedIl({
     entryPrice: price,
-    currentPrice: suggestedRange.priceHigh * 0.999, // juste avant la sortie
-    ...suggestedRange,
+    currentPrice: suggestedRange.priceHigh * 0.999, // juste avant la sortie du range suggéré
+    ...held,
   }).ilPct;
 
-  // 6. APR ajusté du risque = fees − traînée d'IL (scénario 1σ) annualisée
+  // 6. APR ajusté du risque = fees − traînée d'IL (scénario ±1σ sur h jours) annualisée
   const expectedFeeApr = opportunity.estimatedFeeApr;
   const riskAdjustedNetApr = netAprAfterIl(expectedFeeApr, ilAt1Sigma, horizonDays);
 
@@ -99,6 +106,7 @@ export function deepAnalyze(
     expectedFeeApr,
     riskAdjustedNetApr,
     ilAt1Sigma,
+    horizonDays,
   });
 
   return {
@@ -122,6 +130,7 @@ function buildRationale(x: {
   expectedFeeApr: number;
   riskAdjustedNetApr: number;
   ilAt1Sigma: number;
+  horizonDays: number;
 }): string[] {
   const r: string[] = [];
   r.push(`Vol. annualisée ≈ ${(x.volatility.sigmaAnnual * 100).toFixed(0)}% ` +
@@ -138,7 +147,7 @@ function buildRationale(x: {
     r.push(`${x.anomalies} pic(s) de volume anormaux détectés (activité importante)`);
 
   r.push(`Fee APR ≈ ${(x.expectedFeeApr * 100).toFixed(1)}% | ` +
-    `net d'IL (1σ) ≈ ${(x.riskAdjustedNetApr * 100).toFixed(1)}%`);
+    `net d'IL (±1σ sur ${x.horizonDays} j : ${(x.ilAt1Sigma * 100).toFixed(2)}%) ≈ ${(x.riskAdjustedNetApr * 100).toFixed(1)}%`);
 
   if (x.riskAdjustedNetApr <= 0)
     r.push("⚠ IL estimé absorbe les fees sur cet horizon — opportunité douteuse");

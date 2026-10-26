@@ -95,6 +95,21 @@ describe("approbations supervisées — revalidation avant ouverture (faille H2)
     expect(broker.listOpen()).toHaveLength(0);
   });
 
+  it("abandonne si la pool est sortie de POOL_UNIVERSE depuis l'approbation", async () => {
+    const p = pool(); // SOL-USDC : hors de l'univers blue chip / SOL
+    const { broker, queue, clients } = setup({ [p.address]: p });
+    queue.decide(queue.enqueue(request(p), minutesAgo(5)), true);
+    const previous = config.POOL_UNIVERSE;
+    config.POOL_UNIVERSE = "bluechip_sol";
+    try {
+      await openApprovedProposals(broker, clients, queue, now);
+    } finally {
+      config.POOL_UNIVERSE = previous;
+    }
+    expect(queue.listByStatus("EXPIRED")[0]!.note).toContain("POOL_UNIVERSE");
+    expect(broker.listOpen()).toHaveLength(0);
+  });
+
   it("respecte MAX_POSITIONS_PER_SCAN : les approbations suivantes attendent", async () => {
     const pools = Object.fromEntries(
       ["A", "B", "C"].map((k) => [`pool-${k}`, pool({ address: `pool-${k}`, name: `${k}-USDC` })])

@@ -14,6 +14,7 @@ import { deepAnalyze } from "../analytics/deepAnalysis.js";
 import { buildQuoteProfile } from "../analytics/quoteRisk.js";
 import { assessRisk, riskParamsFromConfig } from "../risk/riskAgent.js";
 import { simulatePosition } from "./positionSimulator.js";
+import { config } from "../config.js";
 
 export interface PoolSeries {
   pool: Pool;
@@ -130,7 +131,7 @@ export function runMultiBacktest(
         reasons: [],
       };
       try {
-        const analysis = deepAnalyze(opportunity, trailing, { timeframe });
+        const analysis = deepAnalyze(opportunity, trailing, { timeframe, horizonDays: (window * candleSeconds) / 86_400 });
         analyzed.push({ idx: p, poolNow, opportunity, analysis });
       } catch {
         /* pas assez de bougies */
@@ -169,6 +170,7 @@ export function runMultiBacktest(
           range: a.analysis.suggestedRange,
           feeAprAnnual: a.opportunity.estimatedFeeApr,
           feeShareOfVolume: feeShareOfVolume(a.poolNow),
+          tradeCostPct: config.BACKTEST_TRADE_COST_PCT,
           forwardCandles: forward,
           candleSeconds,
         });

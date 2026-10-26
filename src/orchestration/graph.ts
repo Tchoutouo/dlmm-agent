@@ -12,7 +12,7 @@ import type {
   RiskAssessment,
   ScoredOpportunity,
 } from "../types.js";
-import { deepAnalyze } from "../analytics/deepAnalysis.js";
+import { chooseCoveredPool, spotPositionBins, withFeeConcentration } from "../analytics/poolChoice.js";
 import { buildQuoteProfile } from "../analytics/quoteRisk.js";
 import { assessRisk } from "../risk/riskAgent.js";
 import type { OrchestratorDeps, DecisionRecord } from "./deps.js";
@@ -72,10 +72,23 @@ export function buildOrchestrator(deps: OrchestratorDeps) {
       const forwardDailyVol = deps.getForwardVol
         ? await deps.getForwardVol(c.pool.address, candles)
         : undefined;
-      const analysis = deepAnalyze(c, candles, { forwardDailyVol: forwardDailyVol ?? undefined });
-      const quoteUsd = await deps.getQuoteUsdPrice(c.pool.mintY);
-      const quoteProfile = buildQuoteProfile(c.pool.mintY, quoteUsd);
-      return { analysis, quoteProfile };
+      // Parmi les pools du token, celle dont le bin step couvre le mieux la volatilité
+      const options = { forwardDailyVol: forwardDailyVol ?? undefined };
+      let choice = chooseCoveredPool(c, candles, options);
+      const quoteUsd = await deps.getQuoteUsdPrice(choice.opportunity.pool.mintY);
+      const quoteProfile = buildQuoteProfile(choice.opportunity.pool.mintY, quoteUsd);
+      // Part réelle des fees de la position (liquidité concurrente près du prix)
+      if (deps.getFeeConcentration) {
+        const raw = await deps
+          .getFeeConcentration(choice.opportunity.pool, quoteUsd, spotPositionBins(choice))
+          .catch(() => null);
+        choice = withFeeConcentration(choice, candles, raw, options);
+      }
+      const chosen = choice.opportunity;
+      if (chosen === c) return { analysis: choice.analysis, quoteProfile };
+      // La suite (risque, exécution, journal) porte sur la pool choisie, APR ajusté
+      const candidates = s.candidates.map((x, i) => (i === s.cursor ? chosen : x));
+      return { analysis: choice.analysis, quoteProfile, candidates };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`⚠️ Analyse ${c.pool.name} échouée : ${msg}`);

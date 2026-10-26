@@ -34,7 +34,8 @@ const schema = z.object({
   // Vol. journalière USD supposée du quote non-stable (ex. SOL) si pas de série de réf.
   QUOTE_DAILY_VOL_PCT: z.coerce.number().min(0).default(5),
   INITIAL_CASH_USD: z.coerce.number().positive().default(1000),
-  // Paper trading : horizon de détention d'une position simulée (jours).
+  // Durée de détention d'une position (jours) : clôture paper/live à l'échéance, et
+  // horizon du scénario d'IL de l'analyse (IL à ±1σ√h, annualisé sur h jours).
   PAPER_HOLDING_DAYS: z.coerce.number().positive().default(1),
   // Exécution réelle (Agent 3) — désactivée par défaut, devnet only sans ACK explicite.
   WALLET_SECRET_KEY: z.string().optional(), // base58 ; NE JAMAIS committer
@@ -61,10 +62,6 @@ const schema = z.object({
   CLOSE_IF_OUT_OF_RANGE_H: z.coerce.number().min(0).default(6),
   // Fees minimum accumulées avant de déclencher un claim (limite les transactions de claim inutiles)
   MIN_FEE_CLAIM_USD: z.coerce.number().min(0).default(2.0),
-  // Horizon de détention supposé (jours). Définit la période sur laquelle l'IL est
-  // rapporté avant annualisation. Un horizon plus long réduit l'IL annualisé apparent
-  // pour un LP statique non rebalancé (IL₇j / 7 × 365, et non IL₁j × 365).
-  HOLDING_HORIZON_DAYS: z.coerce.number().int().min(1).max(30).default(7),
   // Auto-swap Jupiter : échange automatique de tokens si solde insuffisant pour entrer une pool.
   AUTO_SWAP: z
     .string()
@@ -97,6 +94,31 @@ const schema = z.object({
   // 20 000 × ~400 000 CU ≈ 0,000008 SOL : négligeable, mais évite qu'un stop-loss
   // reste bloqué quand le réseau est chargé. 0 = désactivé.
   PRIORITY_FEE_MICROLAMPORTS: z.coerce.number().min(0).default(20_000),
+  // Couverture minimale (%) : part du range dicté par la volatilité que la position
+  // exécutable (69 bins) couvre réellement. Sous ce seuil, le bin step est trop
+  // petit pour la volatilité : la position sort du range et l'IL dépasse les fees.
+  // 0 = contrôle désactivé.
+  MIN_RANGE_COVERAGE_PCT: z.coerce.number().min(0).max(100).default(50),
+  // Modèle de fees calibré on-chain : une position touche les fees de SES bins,
+  // pas sa part de TVL. Le facteur mesuré (liquidité près du prix) est plafonné
+  // à MAX_FEE_CONCENTRATION par prudence. 0 = modèle de base (part de TVL).
+  MAX_FEE_CONCENTRATION: z.coerce.number().min(0).default(2),
+  // RPC mainnet de LECTURE (liquidité des bins), distinct du RPC d'exécution.
+  MAINNET_READ_RPC_URL: z.string().url().default("https://api.mainnet-beta.solana.com"),
+  // Backtest : coût d'un aller-retour (swaps pour entrer/sortir de la pool, frais
+  // réseau), en % de la taille, prélevé sur chaque position simulée.
+  BACKTEST_TRADE_COST_PCT: z.coerce.number().min(0).default(0.2),
+  // Univers de pools de l'agent : "all" (toutes catégories) ou "bluechip_sol"
+  // (token blue chip coté en SOL : JUP-SOL, cbBTC-SOL…). Les blue chips sont
+  // identifiés par MINT, jamais par symbole (un memecoin peut s'appeler « BTC »).
+  POOL_UNIVERSE: z.enum(["all", "bluechip_sol"]).default("all"),
+  // Mints blue chip supplémentaires (séparés par des virgules) en plus de la liste
+  // intégrée (src/analytics/poolUniverse.ts).
+  BLUECHIP_EXTRA_MINTS: z
+    .string()
+    .default("")
+    .transform((v) => v.split(",").map((m) => m.trim()).filter(Boolean))
+    .refine((ms) => ms.every((m) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(m)), "BLUECHIP_EXTRA_MINTS : mint base58 invalide"),
   // Durée de vie d'une proposition du mode supervisé (minutes) : au-delà, elle expire
   // même approuvée. Avant toute ouverture, l'agent la revalide (prix, risque).
   APPROVAL_TTL_MIN: z.coerce.number().positive().default(120),
